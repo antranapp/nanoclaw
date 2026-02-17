@@ -4,9 +4,13 @@ import path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
 
 import type { WebChannel, WebChannelEvent } from '../channels/web.js';
-import type { WebUiServer } from './server.js';
 import { getAllChats, getRecentMessages } from '../db.js';
 import { logger } from '../logger.js';
+
+export interface WebUiServer {
+  url: string;
+  close(): Promise<void>;
+}
 
 export interface NextJsServerOpts {
   channel: WebChannel;
