@@ -30,6 +30,12 @@ claude
 
 Then run `/setup`. Claude Code handles everything: dependencies, authentication, container setup, service configuration.
 
+To start the local web chat UI (main channel), run:
+
+```bash
+npm run webui
+```
+
 ## Philosophy
 
 **Small enough to understand.** One process, a few source files. No microservices, no message queues, no abstraction layers. Have Claude Code walk you through it.

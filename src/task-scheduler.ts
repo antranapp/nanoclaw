@@ -10,7 +10,11 @@ import {
   SCHEDULER_POLL_INTERVAL,
   TIMEZONE,
 } from './config.js';
-import { AgentOutput, runAgent as runProcessAgent, writeTasksSnapshot } from './process-runner.js';
+import {
+  AgentOutput,
+  runAgent as runProcessAgent,
+  writeTasksSnapshot,
+} from './process-runner.js';
 import {
   getAllTasks,
   getDueTasks,
@@ -26,7 +30,13 @@ export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
   getSessions: () => Record<string, string>;
   queue: GroupQueue;
-  onProcess: (groupJid: string, proc: ChildProcess, processName: string, groupFolder: string) => void;
+  onProcess: (
+    groupKey: string,
+    proc: ChildProcess,
+    processName: string,
+    groupFolder: string,
+    activeChatJid: string,
+  ) => void;
   sendMessage: (jid: string, text: string) => Promise<void>;
 }
 
@@ -96,8 +106,11 @@ async function runTask(
   const resetIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      logger.debug({ taskId: task.id }, 'Scheduled task idle timeout, closing agent stdin');
-      deps.queue.closeStdin(task.chat_jid);
+      logger.debug(
+        { taskId: task.id },
+        'Scheduled task idle timeout, closing agent stdin',
+      );
+      deps.queue.closeStdin(task.group_folder);
     }, IDLE_TIMEOUT);
   };
 
@@ -112,7 +125,14 @@ async function runTask(
         isMain,
         isScheduledTask: true,
       },
-      (proc, processName) => deps.onProcess(task.chat_jid, proc, processName, task.group_folder),
+      (proc, processName) =>
+        deps.onProcess(
+          task.group_folder,
+          proc,
+          processName,
+          task.group_folder,
+          task.chat_jid,
+        ),
       async (streamedOutput: AgentOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
@@ -201,10 +221,8 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
           continue;
         }
 
-        deps.queue.enqueueTask(
-          currentTask.chat_jid,
-          currentTask.id,
-          () => runTask(currentTask, deps),
+        deps.queue.enqueueTask(currentTask.group_folder, currentTask.id, () =>
+          runTask(currentTask, deps),
         );
       }
     } catch (err) {

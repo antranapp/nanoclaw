@@ -10,8 +10,9 @@ export function escapeXml(s: string): string {
 }
 
 export function formatMessages(messages: NewMessage[]): string {
-  const lines = messages.map((m) =>
-    `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`,
+  const lines = messages.map(
+    (m) =>
+      `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`,
   );
   return `<messages>\n${lines.join('\n')}\n</messages>`;
 }
@@ -31,7 +32,7 @@ export function routeOutbound(
   jid: string,
   text: string,
 ): Promise<void> {
-  const channel = channels.find((c) => c.ownsJid(jid) && c.isConnected());
+  const channel = channels.find((c) => c.ownsJid(jid));
   if (!channel) throw new Error(`No channel for JID: ${jid}`);
   return channel.sendMessage(jid, text);
 }

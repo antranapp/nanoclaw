@@ -3,7 +3,12 @@ import fs from 'fs';
 import path from 'path';
 
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
-import { NewMessage, RegisteredGroup, ScheduledTask, TaskRunLog } from './types.js';
+import {
+  NewMessage,
+  RegisteredGroup,
+  ScheduledTask,
+  TaskRunLog,
+} from './types.js';
 
 let db: Database.Database;
 
@@ -67,12 +72,14 @@ function createSchema(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS registered_groups (
       jid TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      folder TEXT NOT NULL UNIQUE,
+      folder TEXT NOT NULL,
       trigger_pattern TEXT NOT NULL,
       added_at TEXT NOT NULL,
       container_config TEXT,
-      requires_trigger INTEGER DEFAULT 1
+      requires_trigger INTEGER DEFAULT 1,
+      channel TEXT NOT NULL DEFAULT 'whatsapp'
     );
+    CREATE INDEX IF NOT EXISTS idx_registered_groups_folder ON registered_groups(folder);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -90,12 +97,77 @@ function createSchema(database: Database.Database): void {
       `ALTER TABLE messages ADD COLUMN is_bot_message INTEGER DEFAULT 0`,
     );
     // Backfill: mark existing bot messages that used the content prefix pattern
-    database.prepare(
-      `UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`,
-    ).run(`${ASSISTANT_NAME}:%`);
+    database
+      .prepare(`UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`)
+      .run(`${ASSISTANT_NAME}:%`);
   } catch {
     /* column already exists */
   }
+
+  migrateRegisteredGroupsTable(database);
+}
+
+function migrateRegisteredGroupsTable(database: Database.Database): void {
+  const tableSqlRow = database
+    .prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'registered_groups'`,
+    )
+    .get() as { sql: string } | undefined;
+
+  const columns = database
+    .prepare(`PRAGMA table_info(registered_groups)`)
+    .all() as Array<{ name: string }>;
+
+  const hasChannelColumn = columns.some((c) => c.name === 'channel');
+  const hasUniqueFolderConstraint = tableSqlRow?.sql?.includes(
+    'folder TEXT NOT NULL UNIQUE',
+  );
+
+  if (hasChannelColumn && !hasUniqueFolderConstraint) {
+    database.exec(
+      'CREATE INDEX IF NOT EXISTS idx_registered_groups_channel ON registered_groups(channel)',
+    );
+    return;
+  }
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS registered_groups_new (
+      jid TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      folder TEXT NOT NULL,
+      trigger_pattern TEXT NOT NULL,
+      added_at TEXT NOT NULL,
+      container_config TEXT,
+      requires_trigger INTEGER DEFAULT 1,
+      channel TEXT NOT NULL DEFAULT 'whatsapp'
+    );
+
+    INSERT INTO registered_groups_new (
+      jid,
+      name,
+      folder,
+      trigger_pattern,
+      added_at,
+      container_config,
+      requires_trigger,
+      channel
+    )
+    SELECT
+      jid,
+      name,
+      folder,
+      trigger_pattern,
+      added_at,
+      container_config,
+      requires_trigger,
+      'whatsapp'
+    FROM registered_groups;
+
+    DROP TABLE registered_groups;
+    ALTER TABLE registered_groups_new RENAME TO registered_groups;
+    CREATE INDEX IF NOT EXISTS idx_registered_groups_folder ON registered_groups(folder);
+    CREATE INDEX IF NOT EXISTS idx_registered_groups_channel ON registered_groups(channel);
+  `);
 }
 
 export function initDatabase(): void {
@@ -297,6 +369,43 @@ export function getMessagesSince(
     .all(chatJid, sinceTimestamp, `${botPrefix}:%`) as NewMessage[];
 }
 
+export function getMessagesSinceForJids(
+  chatJids: string[],
+  sinceTimestamp: string,
+  botPrefix: string,
+): NewMessage[] {
+  if (chatJids.length === 0) return [];
+
+  const placeholders = chatJids.map(() => '?').join(',');
+  const sql = `
+    SELECT id, chat_jid, sender, sender_name, content, timestamp
+    FROM messages
+    WHERE chat_jid IN (${placeholders}) AND timestamp > ?
+      AND is_bot_message = 0 AND content NOT LIKE ?
+    ORDER BY timestamp
+  `;
+
+  return db
+    .prepare(sql)
+    .all(...chatJids, sinceTimestamp, `${botPrefix}:%`) as NewMessage[];
+}
+
+export function getRecentMessages(chatJid: string, limit = 100): NewMessage[] {
+  // Query in DESC for efficient LIMIT, then reverse for chat display order.
+  const rows = db
+    .prepare(
+      `
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message
+      FROM messages
+      WHERE chat_jid = ?
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `,
+    )
+    .all(chatJid, limit) as NewMessage[];
+  return rows.reverse();
+}
+
 export function createTask(
   task: Omit<ScheduledTask, 'last_run' | 'last_result'>,
 ): void {
@@ -475,7 +584,7 @@ export function getAllSessions(): Record<string, string> {
 
 export function getRegisteredGroup(
   jid: string,
-): (RegisteredGroup & { jid: string }) | undefined {
+): (RegisteredGroup & { jid: string; channel: string }) | undefined {
   const row = db
     .prepare('SELECT * FROM registered_groups WHERE jid = ?')
     .get(jid) as
@@ -487,6 +596,7 @@ export function getRegisteredGroup(
         added_at: string;
         container_config: string | null;
         requires_trigger: number | null;
+        channel: string | null;
       }
     | undefined;
   if (!row) return undefined;
@@ -499,17 +609,20 @@ export function getRegisteredGroup(
     agentConfig: row.container_config
       ? JSON.parse(row.container_config)
       : undefined,
-    requiresTrigger: row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+    requiresTrigger:
+      row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+    channel: row.channel || 'whatsapp',
   };
 }
 
 export function setRegisteredGroup(
   jid: string,
   group: RegisteredGroup,
+  channel = 'whatsapp',
 ): void {
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, channel)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jid,
     group.name,
@@ -518,13 +631,12 @@ export function setRegisteredGroup(
     group.added_at,
     group.agentConfig ? JSON.stringify(group.agentConfig) : null,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
+    channel,
   );
 }
 
 export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
-  const rows = db
-    .prepare('SELECT * FROM registered_groups')
-    .all() as Array<{
+  const rows = db.prepare('SELECT * FROM registered_groups').all() as Array<{
     jid: string;
     name: string;
     folder: string;
@@ -532,6 +644,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     added_at: string;
     container_config: string | null;
     requires_trigger: number | null;
+    channel: string | null;
   }>;
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
@@ -543,10 +656,18 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       agentConfig: row.container_config
         ? JSON.parse(row.container_config)
         : undefined,
-      requiresTrigger: row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+      requiresTrigger:
+        row.requires_trigger === null ? undefined : row.requires_trigger === 1,
     };
   }
   return result;
+}
+
+export function getRegisteredJidsForFolder(folder: string): string[] {
+  const rows = db
+    .prepare('SELECT jid FROM registered_groups WHERE folder = ?')
+    .all(folder) as Array<{ jid: string }>;
+  return rows.map((r) => r.jid);
 }
 
 // --- JSON migration ---
