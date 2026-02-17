@@ -38,9 +38,9 @@ export function ChatPanel({ messages, isTyping, activeChatJid, onSend }: Props) 
   };
 
   return (
-    <div className="flex-1 flex flex-col min-w-0">
-      <ScrollArea className="flex-1 px-4 py-3">
-        <div className="flex flex-col gap-3">
+    <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <ScrollArea className="flex-1 overflow-hidden">
+        <div className="flex flex-col gap-3 px-4 py-3">
           {messages.map((msg) => {
             const fromSelf = !msg.is_bot_message;
             return (

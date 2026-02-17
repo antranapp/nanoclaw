@@ -23,11 +23,11 @@ interface Props {
 
 export function ChatSidebar({ chats, activeChatJid, onSelect }: Props) {
   return (
-    <aside className="w-72 flex-shrink-0 border-r border-black/10 flex flex-col bg-white/40">
+    <aside className="w-72 flex-shrink-0 border-r border-black/10 flex flex-col bg-white/40 overflow-hidden">
       <div className="px-4 py-3 border-b border-black/10">
         <p className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Chats</p>
       </div>
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1 overflow-hidden">
         {chats.length === 0 && (
           <p className="px-4 py-6 text-sm text-muted-foreground">No chats yet</p>
         )}
