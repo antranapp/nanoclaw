@@ -36,29 +36,6 @@ else
   log "Node not found"
 fi
 
-# Check Apple Container
-APPLE_CONTAINER="not_found"
-if command -v container >/dev/null 2>&1; then
-  APPLE_CONTAINER="installed"
-  log "Apple Container: installed ($(which container))"
-else
-  log "Apple Container: not found"
-fi
-
-# Check Docker
-DOCKER="not_found"
-if command -v docker >/dev/null 2>&1; then
-  if docker info >/dev/null 2>&1; then
-    DOCKER="running"
-    log "Docker: running"
-  else
-    DOCKER="installed_not_running"
-    log "Docker: installed but not running"
-  fi
-else
-  log "Docker: not found"
-fi
-
 # Check existing config
 HAS_ENV="false"
 if [ -f "$PROJECT_ROOT/.env" ]; then
@@ -92,8 +69,6 @@ cat <<EOF
 PLATFORM: $PLATFORM
 NODE_VERSION: $NODE_VERSION
 NODE_OK: $NODE_OK
-APPLE_CONTAINER: $APPLE_CONTAINER
-DOCKER: $DOCKER
 HAS_ENV: $HAS_ENV
 HAS_AUTH: $HAS_AUTH
 HAS_REGISTERED_GROUPS: $HAS_REGISTERED_GROUPS

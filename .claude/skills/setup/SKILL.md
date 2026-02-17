@@ -17,7 +17,6 @@ Run `./.claude/skills/setup/scripts/01-check-environment.sh` and parse the statu
 
 - If HAS_AUTH=true → note that WhatsApp auth exists, offer to skip step 5
 - If HAS_REGISTERED_GROUPS=true → note existing config, offer to skip or reconfigure
-- Record PLATFORM, APPLE_CONTAINER, and DOCKER values for step 3
 
 **If NODE_OK=false:**
 
@@ -39,48 +38,18 @@ Run `./.claude/skills/setup/scripts/02-install-deps.sh` and parse the status blo
 
 Only ask the user for help if multiple retries fail with the same error.
 
-## 3. Container Runtime
+## 3. Build Agent Runner
 
-### 3a. Choose runtime
-
-Use the environment check results from step 1 to decide which runtime to use:
-
-- PLATFORM=linux → Docker
-- PLATFORM=macos + APPLE_CONTAINER=installed → apple-container
-- PLATFORM=macos + DOCKER=running + APPLE_CONTAINER=not_found → Docker
-- PLATFORM=macos + DOCKER=installed_not_running → start Docker: `open -a Docker`. Wait 15s, re-check with `docker info`. If still not running, tell the user Docker is starting up and poll a few more times.
-- Neither available → AskUserQuestion: Apple Container (recommended for macOS) vs Docker?
-  - Apple Container: tell user to download from https://github.com/apple/container/releases and install the .pkg. Wait for confirmation, then verify with `container --version`.
-  - Docker on macOS: install via `brew install --cask docker`, then `open -a Docker` and wait for it to start. If brew not available, direct to Docker Desktop download.
-  - Docker on Linux: install with `curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER`. Note: user may need to log out/in for group membership.
-
-### 3b. Docker conversion gate (REQUIRED before building)
-
-**If the chosen runtime is Docker**, you MUST check whether the source code has already been converted from Apple Container to Docker. Do NOT skip this step. Run:
+Build the agent-runner (the Node.js process that runs the Claude Agent SDK):
 
 ```bash
-grep -q 'container system status' src/index.ts && echo "NEEDS_CONVERSION" || echo "ALREADY_CONVERTED"
+cd agent-runner && npm install && npm run build && cd ..
 ```
 
-Check these three files for Apple Container references:
-- `src/index.ts` — look for `container system status` or `ensureContainerSystemRunning`
-- `src/container-runner.ts` — look for `spawn('container'`
-- `container/build.sh` — look for `container build`
-
-**If ANY of those Apple Container references exist**, the source code has NOT been converted. You MUST run the `/convert-to-docker` skill NOW, before proceeding to the build step. Do not attempt to build the container image until the conversion is complete.
-
-**If none of those references exist** (i.e. the code already uses `docker info`, `spawn('docker'`, `docker build`), the conversion has already been done. Continue to 3c.
-
-### 3c. Build and test
-
-Run `./.claude/skills/setup/scripts/03-setup-container.sh --runtime <chosen>` and parse the status block.
-
-**If BUILD_OK=false:** Read `logs/setup.log` tail for the build error.
-- If it's a cache issue (stale layers): run `container builder stop && container builder rm && container builder start` (Apple Container) or `docker builder prune -f` (Docker), then retry.
-- If Dockerfile syntax or missing files: diagnose from the log and fix.
-- Retry the build script after fixing.
-
-**If TEST_OK=false but BUILD_OK=true:** The image built but won't run. Check logs — common cause is runtime not fully started. Wait a moment and retry the test.
+**If build fails:** Read the error output. Common fixes:
+1. Missing dependencies: `rm -rf agent-runner/node_modules && cd agent-runner && npm install && cd ..`
+2. TypeScript errors: check `agent-runner/src/` for issues
+3. Verify `agent-runner/tsconfig.json` exists
 
 ## 4. Claude Authentication (No Script)
 
@@ -170,7 +139,7 @@ AskUserQuestion: Want the agent to access directories outside the NanoClaw proje
 
 `echo '{"allowedRoots":[...],"blockedPatterns":[],"nonMainReadOnly":true}' | ./.claude/skills/setup/scripts/07-configure-mounts.sh`
 
-Tell user how to grant a group access: add `containerConfig.additionalMounts` to their entry in `data/registered_groups.json`.
+Tell user how to grant a group access: add `agentConfig.additionalDirectories` to their entry in the database.
 
 ## 10. Start Service
 
@@ -207,7 +176,7 @@ Show the log tail command: `tail -f logs/nanoclaw.log`
 
 **Service not starting:** Check `logs/nanoclaw.error.log`. Common causes: wrong Node path in plist (re-run step 10), missing `.env` (re-run step 4), missing WhatsApp auth (re-run step 5).
 
-**Container agent fails ("Claude Code process exited with code 1"):** Ensure the container runtime is running — start it: `container system start` (Apple Container) or `open -a Docker` (macOS Docker). Check container logs in `groups/main/logs/container-*.log`.
+**Agent fails ("Claude Code process exited with code 1"):** Check agent logs in `groups/main/logs/agent-*.log`. Common causes: missing credentials in `.env`, invalid session state (clear with `rm -rf data/sessions/{groupFolder}`).
 
 **No response to messages:** Verify the trigger pattern matches. Main channel and personal/solo chats don't need a prefix. Check the registered JID in the database: `sqlite3 store/messages.db "SELECT * FROM registered_groups"`. Check `logs/nanoclaw.log`.
 

@@ -44,16 +44,7 @@ elif [ "$PLATFORM" = "linux" ]; then
 fi
 log "Service: $SERVICE"
 
-# 2. Check container runtime
-CONTAINER_RUNTIME="none"
-if command -v container >/dev/null 2>&1; then
-  CONTAINER_RUNTIME="apple-container"
-elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-  CONTAINER_RUNTIME="docker"
-fi
-log "Container runtime: $CONTAINER_RUNTIME"
-
-# 3. Check credentials
+# 2. Check credentials
 CREDENTIALS="missing"
 if [ -f "$PROJECT_ROOT/.env" ]; then
   if grep -qE "^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=" "$PROJECT_ROOT/.env" 2>/dev/null; then
@@ -62,21 +53,21 @@ if [ -f "$PROJECT_ROOT/.env" ]; then
 fi
 log "Credentials: $CREDENTIALS"
 
-# 4. Check WhatsApp auth
+# 3. Check WhatsApp auth
 WHATSAPP_AUTH="not_found"
 if [ -d "$PROJECT_ROOT/store/auth" ] && [ "$(ls -A "$PROJECT_ROOT/store/auth" 2>/dev/null)" ]; then
   WHATSAPP_AUTH="authenticated"
 fi
 log "WhatsApp auth: $WHATSAPP_AUTH"
 
-# 5. Check registered groups (in SQLite — the JSON file gets migrated away on startup)
+# 4. Check registered groups (in SQLite — the JSON file gets migrated away on startup)
 REGISTERED_GROUPS=0
 if [ -f "$PROJECT_ROOT/store/messages.db" ]; then
   REGISTERED_GROUPS=$(sqlite3 "$PROJECT_ROOT/store/messages.db" "SELECT COUNT(*) FROM registered_groups" 2>/dev/null || echo "0")
 fi
 log "Registered groups: $REGISTERED_GROUPS"
 
-# 6. Check mount allowlist
+# 5. Check mount allowlist
 MOUNT_ALLOWLIST="missing"
 if [ -f "$HOME/.config/nanoclaw/mount-allowlist.json" ]; then
   MOUNT_ALLOWLIST="configured"
@@ -94,7 +85,6 @@ log "Verification complete: $STATUS"
 cat <<EOF
 === NANOCLAW SETUP: VERIFY ===
 SERVICE: $SERVICE
-CONTAINER_RUNTIME: $CONTAINER_RUNTIME
 CREDENTIALS: $CREDENTIALS
 WHATSAPP_AUTH: $WHATSAPP_AUTH
 REGISTERED_GROUPS: $REGISTERED_GROUPS
