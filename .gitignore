@@ -30,3 +30,7 @@ groups/global/*
 .vscode/
 
 agents-sdk-docs
+
+# Web UI
+webui/.next/
+webui/node_modules/

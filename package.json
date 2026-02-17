@@ -14,7 +14,8 @@
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "webui:dev": "cd webui && npm run dev -- --port 4317"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
