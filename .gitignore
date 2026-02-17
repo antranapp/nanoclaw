@@ -34,3 +34,7 @@ agents-sdk-docs
 # Web UI
 webui/.next/
 webui/node_modules/
+
+firebase-debug.log
+
+.playwright-mcp/
