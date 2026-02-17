@@ -4,7 +4,7 @@ import path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
 
 import type { WebChannel, WebChannelEvent } from '../channels/web.js';
-import { getAllChats, getRecentMessages } from '../db.js';
+import { getRegisteredChats, getRecentMessages } from '../db.js';
 import { logger } from '../logger.js';
 
 export interface WebUiServer {
@@ -60,7 +60,7 @@ export async function startNextJsServer(opts: NextJsServerOpts): Promise<WebUiSe
           assistantName: opts.assistantName,
           chatJid: opts.chatJid,
           messages: getRecentMessages(opts.chatJid, 200),
-          chats: getAllChats(),
+          chats: getRegisteredChats(),
         });
       }
 

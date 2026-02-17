@@ -254,6 +254,23 @@ export function getAllChats(): ChatInfo[] {
 }
 
 /**
+ * Get only chats that have a registered agent group, ordered by most recent activity.
+ * This filters out unrelated WhatsApp chats that were synced for discovery purposes.
+ */
+export function getRegisteredChats(): ChatInfo[] {
+  return db
+    .prepare(
+      `
+    SELECT c.jid, c.name, c.last_message_time
+    FROM chats c
+    INNER JOIN registered_groups rg ON c.jid = rg.jid
+    ORDER BY c.last_message_time DESC
+  `,
+    )
+    .all() as ChatInfo[];
+}
+
+/**
  * Get timestamp of last group metadata sync.
  */
 export function getLastGroupSync(): string | null {
