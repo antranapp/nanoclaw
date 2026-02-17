@@ -24,7 +24,6 @@ import {
   getAllTasks,
   getMessagesSinceForJids,
   getNewMessages,
-  getRecentMessages,
   getRouterState,
   initDatabase,
   setRegisteredGroup,
@@ -44,7 +43,8 @@ import {
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
-import { startWebUiServer, WebUiServer } from './webui/server.js';
+import { startNextJsServer } from './webui/nextjs-server.js';
+import type { WebUiServer } from './webui/server.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -593,13 +593,12 @@ async function main(): Promise<void> {
     channels.push(webChannel);
 
     const port = parseInt(process.env.WEBUI_PORT || '4317', 10);
-    webUiServer = await startWebUiServer({
+    webUiServer = await startNextJsServer({
       channel: webChannel,
       assistantName: ASSISTANT_NAME,
       chatJid: WEB_MAIN_JID,
       host: '127.0.0.1',
       port,
-      getRecentMessages,
     });
 
     logger.info({ url: webUiServer.url }, 'Open Web UI in browser');
