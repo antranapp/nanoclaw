@@ -470,7 +470,14 @@ export function updateTask(
   updates: Partial<
     Pick<
       ScheduledTask,
-      'prompt' | 'schedule_type' | 'schedule_value' | 'next_run' | 'status'
+      | 'prompt'
+      | 'schedule_type'
+      | 'schedule_value'
+      | 'next_run'
+      | 'status'
+      | 'context_mode'
+      | 'group_folder'
+      | 'chat_jid'
     >
   >,
 ): void {
@@ -496,6 +503,18 @@ export function updateTask(
   if (updates.status !== undefined) {
     fields.push('status = ?');
     values.push(updates.status);
+  }
+  if (updates.context_mode !== undefined) {
+    fields.push('context_mode = ?');
+    values.push(updates.context_mode);
+  }
+  if (updates.group_folder !== undefined) {
+    fields.push('group_folder = ?');
+    values.push(updates.group_folder);
+  }
+  if (updates.chat_jid !== undefined) {
+    fields.push('chat_jid = ?');
+    values.push(updates.chat_jid);
   }
 
   if (fields.length === 0) return;

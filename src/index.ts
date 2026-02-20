@@ -43,7 +43,7 @@ import {
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
-import { startNextJsServer } from './webui/nextjs-server.js';
+import { startNextJsServer, startApiServer } from './webui/nextjs-server.js';
 import type { WebUiServer } from './webui/nextjs-server.js';
 
 // Re-export for backwards compatibility during refactor
@@ -543,12 +543,13 @@ function recoverPendingMessages(): void {
 
 async function main(): Promise<void> {
   const enableWebUi = process.argv.includes('--webui');
+  const enableApi = process.argv.includes('--api'); // API+WS only, no embedded Next.js
 
   initDatabase();
   logger.info('Database initialized');
   loadState();
 
-  if (enableWebUi) {
+  if (enableWebUi || enableApi) {
     ensureWebMainBinding();
   }
 
@@ -582,7 +583,7 @@ async function main(): Promise<void> {
   // Connect — resolves when first connected
   await whatsapp.connect();
 
-  if (enableWebUi) {
+  if (enableWebUi || enableApi) {
     webChannel = new WebChannel({
       assistantName: ASSISTANT_NAME,
       onMessage: (_chatJid, msg) => storeMessage(msg),
@@ -593,15 +594,21 @@ async function main(): Promise<void> {
     channels.push(webChannel);
 
     const port = parseInt(process.env.WEBUI_PORT || '4317', 10);
-    webUiServer = await startNextJsServer({
+    const serverOpts = {
       channel: webChannel,
       assistantName: ASSISTANT_NAME,
       chatJid: WEB_MAIN_JID,
       host: '127.0.0.1',
       port,
-    });
+    };
 
-    logger.info({ url: webUiServer.url }, 'Open Web UI in browser');
+    if (enableWebUi) {
+      webUiServer = await startNextJsServer(serverOpts);
+      logger.info({ url: webUiServer.url }, 'Open Web UI in browser');
+    } else {
+      webUiServer = await startApiServer(serverOpts);
+      logger.info({ url: webUiServer.url }, 'API ready — open http://127.0.0.1:4319 (npm run webui:dev)');
+    }
   }
 
   // Start subsystems (independently of connection handler)

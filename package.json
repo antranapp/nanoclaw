@@ -9,13 +9,14 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "webui": "tsx src/index.ts --webui",
+    "webui:backend": "tsx src/index.ts --api",
     "auth": "tsx src/whatsapp-auth.ts",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
     "test": "vitest run",
     "test:watch": "vitest",
-    "webui:dev": "cd webui && npm run dev -- --port 4317"
+    "webui:dev": "cd webui && PORT=4319 BACKEND_URL=http://127.0.0.1:4317 BACKEND_WS_URL=ws://127.0.0.1:4317/api/ws npm run dev"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc.9",

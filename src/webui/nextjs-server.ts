@@ -3,8 +3,21 @@ import http from 'http';
 import path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
 
+import { CronExpressionParser } from 'cron-parser';
+import { randomUUID } from 'crypto';
+
 import type { WebChannel, WebChannelEvent } from '../channels/web.js';
-import { getRegisteredChats, getRecentMessages } from '../db.js';
+import { TIMEZONE } from '../config.js';
+import {
+  getRegisteredChats,
+  getRecentMessages,
+  getAllTasks,
+  getTaskById,
+  createTask,
+  updateTask,
+  deleteTask,
+  getAllRegisteredGroups,
+} from '../db.js';
 import { logger } from '../logger.js';
 
 export interface WebUiServer {
@@ -12,7 +25,7 @@ export interface WebUiServer {
   close(): Promise<void>;
 }
 
-export interface NextJsServerOpts {
+export interface ApiServerOpts {
   channel: WebChannel;
   assistantName: string;
   chatJid: string;
@@ -20,17 +33,54 @@ export interface NextJsServerOpts {
   port: number;
 }
 
+export interface NextJsServerOpts extends ApiServerOpts {}
+
+/**
+ * Starts only the HTTP API + WebSocket server with no frontend.
+ * Use this when you want to run the React frontend separately via `npm run webui:dev`.
+ *
+ * Port layout:
+ *   opts.port  → API + WebSocket (this server)
+ *   4319       → Next.js dev server started by `npm run webui:dev`
+ */
+export async function startApiServer(opts: ApiServerOpts): Promise<WebUiServer> {
+  const { server, wss, sockets } = createApiHttpServer(opts, null);
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(opts.port, opts.host, () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+
+  const url = `http://${opts.host}:${opts.port}`;
+  logger.info({ url }, 'Web UI API server started (frontend: npm run webui:dev)');
+
+  return {
+    url,
+    async close(): Promise<void> {
+      for (const ws of sockets) {
+        try { ws.close(); } catch { /* ignore */ }
+      }
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    },
+  };
+}
+
 /**
  * Starts a composite server:
- * - Port 4317: our HTTP server handling API routes + WebSocket + proxying UI to Next.js
- * - Port 4318: Next.js dev server (internal, UI rendering only)
+ * - opts.port      → HTTP API + WebSocket + proxy to Next.js UI
+ * - opts.port + 1  → Next.js dev server (internal, spawned here)
  *
- * Next.js with Turbopack spawns its own HTTP server during prepare(), so we can't
- * run it in-process on the same port. Instead we proxy UI requests to it.
+ * Use this when you want a single command that runs everything.
  */
 export async function startNextJsServer(opts: NextJsServerOpts): Promise<WebUiServer> {
   const webuiDir = path.resolve(process.cwd(), 'webui');
-  const nextPort = opts.port + 1; // Internal Next.js port
+  const nextPort = opts.port + 1;
 
   // Spawn Next.js dev server
   const nextProcess = spawn('npx', ['next', 'dev', '--port', String(nextPort), '--hostname', opts.host], {
@@ -44,17 +94,54 @@ export async function startNextJsServer(opts: NextJsServerOpts): Promise<WebUiSe
     if (msg) logger.debug({ source: 'nextjs' }, msg);
   });
 
-  // Wait for Next.js to be ready
   await waitForNextJs(opts.host, nextPort, nextProcess);
 
-  // Create our main HTTP server on the user-facing port
+  const { server, wss, sockets } = createApiHttpServer(opts, nextPort);
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(opts.port, opts.host, () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+
+  const url = `http://${opts.host}:${opts.port}`;
+  logger.info({ url }, 'Next.js Web UI server started');
+
+  return {
+    url,
+    async close(): Promise<void> {
+      for (const ws of sockets) {
+        try { ws.close(); } catch { /* ignore */ }
+      }
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+      nextProcess.kill();
+      await new Promise<void>((resolve) => nextProcess.once('exit', resolve));
+    },
+  };
+}
+
+// --- Shared API server builder ---
+
+/**
+ * Creates the HTTP + WebSocket server that handles all API routes.
+ * Pass `nextPort` to also proxy non-API requests to a Next.js instance,
+ * or `null` to return 404 for non-API routes (API-only mode).
+ */
+function createApiHttpServer(
+  opts: ApiServerOpts,
+  nextPort: number | null,
+): { server: http.Server; wss: WebSocketServer; sockets: Set<WebSocket> } {
   const sockets = new Set<WebSocket>();
 
   const server = http.createServer(async (req, res) => {
     try {
       const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
 
-      // Handle API routes directly (data lives in this process)
       if (pathname === '/api/bootstrap' && req.method === 'GET') {
         return sendJson(res, 200, {
           assistantName: opts.assistantName,
@@ -75,36 +162,128 @@ export async function startNextJsServer(opts: NextJsServerOpts): Promise<WebUiSe
 
       if (pathname?.startsWith('/api/chats/') && pathname.endsWith('/messages') && req.method === 'GET') {
         const parts = pathname.split('/');
-        // /api/chats/[jid]/messages → parts = ['', 'api', 'chats', jid, 'messages']
         const jid = decodeURIComponent(parts[3]);
         const messages = getRecentMessages(jid, 200);
         return sendJson(res, 200, { messages });
       }
 
-      // Proxy everything else to Next.js
-      proxyRequest(req, res, opts.host, nextPort);
+      if (pathname === '/api/tasks' && req.method === 'GET') {
+        return sendJson(res, 200, { tasks: getAllTasks() });
+      }
+
+      if (pathname === '/api/tasks' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const id = randomUUID();
+        const now = new Date().toISOString();
+        const scheduleType = body.schedule_type as string;
+        const scheduleValue = body.schedule_value as string;
+        const nextRun = calculateNextRun(scheduleType, scheduleValue);
+
+        createTask({
+          id,
+          group_folder: body.group_folder as string,
+          chat_jid: body.chat_jid as string,
+          prompt: body.prompt as string,
+          schedule_type: scheduleType as 'cron' | 'interval' | 'once',
+          schedule_value: scheduleValue,
+          context_mode: (body.context_mode as 'group' | 'isolated') || 'isolated',
+          next_run: nextRun,
+          status: (body.status as 'active' | 'paused') || 'active',
+          created_at: now,
+        });
+        return sendJson(res, 201, { task: getTaskById(id) });
+      }
+
+      const taskPutMatch = pathname?.match(/^\/api\/tasks\/([^/]+)$/);
+      if (taskPutMatch && req.method === 'PUT') {
+        const id = decodeURIComponent(taskPutMatch[1]);
+        const existing = getTaskById(id);
+        if (!existing) return sendJson(res, 404, { error: 'Task not found' });
+
+        const body = await readJsonBody(req);
+        const updates: Record<string, unknown> = {};
+
+        for (const key of ['prompt', 'schedule_type', 'schedule_value', 'context_mode', 'group_folder', 'chat_jid', 'status'] as const) {
+          if (body[key] !== undefined) updates[key] = body[key];
+        }
+
+        const newType = (updates.schedule_type as string) || existing.schedule_type;
+        const newValue = (updates.schedule_value as string) || existing.schedule_value;
+        if (updates.schedule_type !== undefined || updates.schedule_value !== undefined) {
+          updates.next_run = calculateNextRun(newType, newValue);
+        }
+
+        updateTask(id, updates);
+        return sendJson(res, 200, { task: getTaskById(id) });
+      }
+
+      const taskDeleteMatch = pathname?.match(/^\/api\/tasks\/([^/]+)$/);
+      if (taskDeleteMatch && req.method === 'DELETE') {
+        const id = decodeURIComponent(taskDeleteMatch[1]);
+        const existing = getTaskById(id);
+        if (!existing) return sendJson(res, 404, { error: 'Task not found' });
+        deleteTask(id);
+        return sendJson(res, 200, { ok: true });
+      }
+
+      const taskPauseMatch = pathname?.match(/^\/api\/tasks\/([^/]+)\/pause$/);
+      if (taskPauseMatch && req.method === 'POST') {
+        const id = decodeURIComponent(taskPauseMatch[1]);
+        const existing = getTaskById(id);
+        if (!existing) return sendJson(res, 404, { error: 'Task not found' });
+        updateTask(id, { status: 'paused' });
+        return sendJson(res, 200, { task: getTaskById(id) });
+      }
+
+      const taskResumeMatch = pathname?.match(/^\/api\/tasks\/([^/]+)\/resume$/);
+      if (taskResumeMatch && req.method === 'POST') {
+        const id = decodeURIComponent(taskResumeMatch[1]);
+        const existing = getTaskById(id);
+        if (!existing) return sendJson(res, 404, { error: 'Task not found' });
+        const nextRun = calculateNextRun(existing.schedule_type, existing.schedule_value);
+        updateTask(id, { status: 'active', next_run: nextRun });
+        return sendJson(res, 200, { task: getTaskById(id) });
+      }
+
+      if (pathname === '/api/groups' && req.method === 'GET') {
+        const groups = getAllRegisteredGroups();
+        const groupList = Object.entries(groups).map(([jid, g]) => ({
+          jid,
+          name: g.name,
+          folder: g.folder,
+        }));
+        return sendJson(res, 200, { groups: groupList });
+      }
+
+      // Non-API request: proxy to Next.js or 404
+      if (nextPort !== null) {
+        proxyRequest(req, res, opts.host, nextPort);
+      } else {
+        sendJson(res, 404, { error: 'Not found' });
+      }
     } catch (err) {
       logger.error({ err }, 'Request error');
       if (!res.headersSent) sendJson(res, 500, { error: 'Internal server error' });
     }
   });
 
-  // WebSocket server
   const wss = new WebSocketServer({ noServer: true });
 
   server.on('upgrade', (req, socket, head) => {
     const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
 
     if (pathname === '/api/ws') {
-      // Our WebSocket — real-time channel events
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit('connection', ws);
       });
       return;
     }
 
-    // Proxy HMR WebSocket to Next.js
-    proxyWebSocket(req, socket, head, opts.host, nextPort);
+    if (nextPort !== null) {
+      proxyWebSocket(req, socket, head, opts.host, nextPort);
+    } else {
+      socket.destroy();
+    }
   });
 
   wss.on('connection', (ws) => {
@@ -143,31 +322,7 @@ export async function startNextJsServer(opts: NextJsServerOpts): Promise<WebUiSe
     });
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(opts.port, opts.host, () => {
-      server.off('error', reject);
-      resolve();
-    });
-  });
-
-  const url = `http://${opts.host}:${opts.port}`;
-  logger.info({ url }, 'Next.js Web UI server started');
-
-  return {
-    url,
-    async close(): Promise<void> {
-      for (const ws of sockets) {
-        try { ws.close(); } catch { /* ignore */ }
-      }
-      await new Promise<void>((resolve) => wss.close(() => resolve()));
-      await new Promise<void>((resolve, reject) => {
-        server.close((err) => (err ? reject(err) : resolve()));
-      });
-      nextProcess.kill();
-      await new Promise<void>((resolve) => nextProcess.once('exit', resolve));
-    },
-  };
+  return { server, wss, sockets };
 }
 
 // --- Helpers ---
@@ -239,6 +394,21 @@ function proxyWebSocket(
   proxyReq.on('error', () => socket.destroy());
   socket.on('error', () => proxyReq.destroy());
   proxyReq.end();
+}
+
+function calculateNextRun(scheduleType: string, scheduleValue: string): string | null {
+  if (scheduleType === 'cron') {
+    const interval = CronExpressionParser.parse(scheduleValue, { tz: TIMEZONE });
+    return interval.next().toISOString();
+  }
+  if (scheduleType === 'interval') {
+    const ms = parseInt(scheduleValue, 10);
+    return new Date(Date.now() + ms).toISOString();
+  }
+  if (scheduleType === 'once') {
+    return scheduleValue;
+  }
+  return null;
 }
 
 async function waitForNextJs(host: string, port: number, proc: ChildProcess): Promise<void> {
