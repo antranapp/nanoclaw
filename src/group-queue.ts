@@ -16,6 +16,7 @@ const BASE_RETRY_MS = 5000;
 
 interface GroupState {
   active: boolean;
+  isTaskContainer: boolean;
   pendingMessages: boolean;
   pendingTasks: QueuedTask[];
   process: ChildProcess | null;
@@ -38,6 +39,7 @@ export class GroupQueue {
     if (!state) {
       state = {
         active: false,
+        isTaskContainer: false,
         pendingMessages: false,
         pendingTasks: [],
         process: null,
@@ -134,7 +136,7 @@ export class GroupQueue {
    */
   sendMessage(groupKey: string, text: string, chatJid?: string): boolean {
     const state = this.getGroup(groupKey);
-    if (!state.active || !state.groupFolder) return false;
+    if (!state.active || !state.groupFolder || state.isTaskContainer) return false;
     if (chatJid && state.activeChatJid && state.activeChatJid !== chatJid) {
       return false;
     }
@@ -175,6 +177,7 @@ export class GroupQueue {
   ): Promise<void> {
     const state = this.getGroup(groupKey);
     state.active = true;
+    state.isTaskContainer = false;
     state.pendingMessages = false;
     this.activeCount++;
 
@@ -209,6 +212,7 @@ export class GroupQueue {
   private async runTask(groupKey: string, task: QueuedTask): Promise<void> {
     const state = this.getGroup(groupKey);
     state.active = true;
+    state.isTaskContainer = true;
     this.activeCount++;
 
     logger.debug(
@@ -222,6 +226,7 @@ export class GroupQueue {
       logger.error({ groupKey, taskId: task.id, err }, 'Error running task');
     } finally {
       state.active = false;
+      state.isTaskContainer = false;
       state.process = null;
       state.processName = null;
       state.groupFolder = null;
