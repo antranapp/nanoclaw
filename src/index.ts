@@ -544,6 +544,7 @@ function recoverPendingMessages(): void {
 async function main(): Promise<void> {
   const enableWebUi = process.argv.includes('--webui');
   const enableApi = process.argv.includes('--api'); // API+WS only, no embedded Next.js
+  const noWhatsApp = process.argv.includes('--no-whatsapp');
 
   initDatabase();
   logger.info('Database initialized');
@@ -571,17 +572,19 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
-  // Create WhatsApp channel
-  whatsapp = new WhatsAppChannel({
-    onMessage: (_chatJid, msg) => storeMessage(msg),
-    onChatMetadata: (chatJid, timestamp) =>
-      storeChatMetadata(chatJid, timestamp),
-    registeredGroups: () => registeredGroups,
-  });
-  channels.push(whatsapp);
+  // Create WhatsApp channel (skipped in --no-whatsapp mode, e.g. webui:backend)
+  if (!noWhatsApp) {
+    whatsapp = new WhatsAppChannel({
+      onMessage: (_chatJid, msg) => storeMessage(msg),
+      onChatMetadata: (chatJid, timestamp) =>
+        storeChatMetadata(chatJid, timestamp),
+      registeredGroups: () => registeredGroups,
+    });
+    channels.push(whatsapp);
 
-  // Connect — resolves when first connected
-  await whatsapp.connect();
+    // Connect — resolves when first connected
+    await whatsapp.connect();
+  }
 
   if (enableWebUi || enableApi) {
     webChannel = new WebChannel({
@@ -633,7 +636,7 @@ async function main(): Promise<void> {
     sendMessage: (jid, text) => routeOutbound(channels, jid, text),
     registeredGroups: () => registeredGroups,
     registerGroup,
-    syncGroupMetadata: (force) => whatsapp.syncGroupMetadata(force),
+    syncGroupMetadata: noWhatsApp ? async () => {} : (force) => whatsapp.syncGroupMetadata(force),
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),

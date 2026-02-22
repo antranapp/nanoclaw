@@ -320,6 +320,12 @@ function createApiHttpServer(
       unsubscribe();
       sockets.delete(ws);
     });
+
+    ws.on('error', (err) => {
+      logger.debug({ err: (err as Error).message }, 'WebSocket client error');
+      unsubscribe();
+      sockets.delete(ws);
+    });
   });
 
   return { server, wss, sockets };

@@ -9,7 +9,7 @@ import { useChat } from '@/hooks/use-chat';
 export function ChatShell() {
   const { messages, chats, activeChatJid, status, isTyping, assistantName, sendMessage, loadChat } = useChat();
 
-  const badgeVariant = status === 'connected' ? 'default' : 'secondary';
+  const badgeVariant = status === 'connected' ? 'default' : status === 'disconnected' ? 'destructive' : 'secondary';
 
   return (
     <div className="flex flex-col h-full">

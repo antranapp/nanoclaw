@@ -17,7 +17,7 @@ export interface ChatInfo {
   last_message_time: string;
 }
 
-export type ConnectionStatus = 'connecting' | 'connected' | 'reconnecting';
+export type ConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
 
 export function useChat() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -56,24 +56,40 @@ export function useChat() {
   // WebSocket
   useEffect(() => {
     let reconnectTimer: ReturnType<typeof setTimeout>;
+    let retries = 0;
+    const MAX_RETRIES = 8;
+    const BASE_DELAY = 1200;
 
     function connect() {
-      const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const ws = new WebSocket(`${scheme}://${window.location.host}/api/ws`);
+      const wsUrl = process.env.NEXT_PUBLIC_WS_URL
+        ?? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/api/ws`;
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
-      ws.addEventListener('open', () => setStatus('connected'));
+      ws.addEventListener('open', () => {
+        retries = 0;
+        setStatus('connected');
+      });
       ws.addEventListener('close', () => {
-        setStatus('reconnecting');
         setIsTyping(false);
-        reconnectTimer = setTimeout(connect, 1200);
+        retries++;
+        if (retries > MAX_RETRIES) {
+          setStatus('disconnected');
+          return;
+        }
+        setStatus('reconnecting');
+        const delay = Math.min(BASE_DELAY * Math.pow(2, retries - 1), 30000);
+        reconnectTimer = setTimeout(connect, delay);
       });
       ws.addEventListener('message', (ev) => {
         let frame: { type: string; message?: Message; isTyping?: boolean };
         try { frame = JSON.parse(ev.data as string); } catch { return; }
 
         if (frame.type === 'message' && frame.message) {
-          setMessages((prev) => [...prev, frame.message!]);
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === frame.message!.id)) return prev;
+            return [...prev, frame.message!];
+          });
           return;
         }
         if (frame.type === 'typing') {
