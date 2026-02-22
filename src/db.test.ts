@@ -70,7 +70,7 @@ describe('storeMessage', () => {
     expect(messages[0].content).toBe('hello world');
   });
 
-  it('stores empty content', () => {
+  it('filters out empty content', () => {
     storeChatMetadata('group@g.us', '2024-01-01T00:00:00.000Z');
 
     store({
@@ -87,8 +87,7 @@ describe('storeMessage', () => {
       '2024-01-01T00:00:00.000Z',
       'Andy',
     );
-    expect(messages).toHaveLength(1);
-    expect(messages[0].content).toBe('');
+    expect(messages).toHaveLength(0);
   });
 
   it('stores is_from_me flag', () => {

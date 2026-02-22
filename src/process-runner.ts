@@ -4,7 +4,6 @@
  */
 import { ChildProcess, spawn } from 'child_process';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 
 import {
@@ -13,8 +12,10 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  TIMEZONE,
 } from './config.js';
 import { readEnvFile } from './env.js';
+import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -23,10 +24,10 @@ const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
 function getHomeDir(): string {
-  const home = process.env.HOME || os.homedir();
+  const home = process.env.HOME || process.env.USERPROFILE;
   if (!home) {
     throw new Error(
-      'Unable to determine home directory: HOME environment variable is not set and os.homedir() returned empty',
+      'Unable to determine home directory: HOME environment variable is not set',
     );
   }
   return home;
@@ -39,6 +40,7 @@ export interface AgentInput {
   chatJid: string;
   isMain: boolean;
   isScheduledTask?: boolean;
+  assistantName?: string;
   secrets?: Record<string, string>;
 }
 
@@ -59,8 +61,8 @@ function prepareAgentEnvironment(
 ): { env: Record<string, string>; groupDir: string } {
   const homeDir = getHomeDir();
   const projectRoot = process.cwd();
+  const groupDir = resolveGroupFolderPath(group.folder);
 
-  const groupDir = path.join(GROUPS_DIR, group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
   // Per-group Claude sessions directory (isolated from other groups)
@@ -99,8 +101,9 @@ function prepareAgentEnvironment(
     }
   }
 
-  // Per-group IPC namespace
-  const groupIpcDir = path.join(DATA_DIR, 'ipc', group.folder);
+  // Per-group IPC namespace: each group gets its own IPC directory
+  // This prevents cross-group privilege escalation via IPC
+  const groupIpcDir = resolveGroupIpcPath(group.folder);
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
@@ -175,7 +178,7 @@ export async function runAgent(
     'Spawning agent process',
   );
 
-  const logsDir = path.join(GROUPS_DIR, group.folder, 'logs');
+  const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
   return new Promise((resolve) => {
@@ -511,7 +514,8 @@ export function writeTasksSnapshot(
     next_run: string | null;
   }>,
 ): void {
-  const groupIpcDir = path.join(DATA_DIR, 'ipc', groupFolder);
+  // Write filtered tasks to the group's IPC directory
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
   fs.mkdirSync(groupIpcDir, { recursive: true });
 
   const filteredTasks = isMain
@@ -539,7 +543,7 @@ export function writeGroupsSnapshot(
   groups: AvailableGroup[],
   registeredJids: Set<string>,
 ): void {
-  const groupIpcDir = path.join(DATA_DIR, 'ipc', groupFolder);
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
   fs.mkdirSync(groupIpcDir, { recursive: true });
 
   const visibleGroups = isMain ? groups : [];

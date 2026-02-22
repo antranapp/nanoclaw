@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
+    "setup": "tsx setup/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "webui:dev": "trap 'kill 0' INT TERM; tsx src/index.ts --api --no-whatsapp & cd webui && PORT=4319 BACKEND_URL=http://127.0.0.1:4317 NEXT_PUBLIC_WS_URL=ws://127.0.0.1:4317/api/ws npm run dev",

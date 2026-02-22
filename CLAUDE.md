@@ -41,6 +41,13 @@ npm run build        # Compile TypeScript (main + agent-runner)
 
 Service management:
 ```bash
+# macOS (launchd)
 launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
 launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist
+launchctl kickstart -k gui/$(id -u)/com.nanoclaw  # restart
+
+# Linux (systemd)
+systemctl --user start nanoclaw
+systemctl --user stop nanoclaw
+systemctl --user restart nanoclaw
 ```
