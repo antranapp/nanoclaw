@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 interface CronEditorProps {
   value: string;
   onChange: (cron: string) => void;
+  timezone?: string;
 }
 
 type Frequency = 'hourly' | 'daily' | 'weekdays' | 'weekly' | 'monthly';
@@ -58,7 +59,7 @@ function getHumanReadable(cron: string): string {
   }
 }
 
-export function CronEditor({ value, onChange }: CronEditorProps) {
+export function CronEditor({ value, onChange, timezone }: CronEditorProps) {
   const parsed = useMemo(() => parseCronToSimple(value), [value]);
   const [mode, setMode] = useState<'simple' | 'advanced'>('simple');
   const [frequency, setFrequency] = useState<Frequency>(parsed.frequency);
@@ -216,6 +217,9 @@ export function CronEditor({ value, onChange }: CronEditorProps) {
 
       {/* Human-readable preview */}
       <p className="text-xs text-muted-foreground">{humanReadable}</p>
+      {timezone && (
+        <p className="text-xs text-muted-foreground">Times are in {timezone}</p>
+      )}
     </div>
   );
 }

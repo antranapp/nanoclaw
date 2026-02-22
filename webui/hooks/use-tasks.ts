@@ -10,6 +10,7 @@ export interface Task {
   schedule_type: 'cron' | 'interval' | 'once';
   schedule_value: string;
   context_mode: 'group' | 'isolated';
+  timezone?: string;
   next_run: string | null;
   last_run: string | null;
   last_result: string | null;
@@ -25,13 +26,13 @@ export interface Group {
 
 export type CreateTaskInput = Pick<
   Task,
-  'group_folder' | 'chat_jid' | 'prompt' | 'schedule_type' | 'schedule_value' | 'context_mode' | 'status'
+  'group_folder' | 'chat_jid' | 'prompt' | 'schedule_type' | 'schedule_value' | 'context_mode' | 'timezone' | 'status'
 >;
 
 export type UpdateTaskInput = Partial<
   Pick<
     Task,
-    'prompt' | 'schedule_type' | 'schedule_value' | 'context_mode' | 'group_folder' | 'chat_jid' | 'status'
+    'prompt' | 'schedule_type' | 'schedule_value' | 'context_mode' | 'timezone' | 'group_folder' | 'chat_jid' | 'status'
   >
 >;
 

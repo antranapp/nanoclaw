@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 
-import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
+import { ASSISTANT_NAME, DATA_DIR, STORE_DIR, TIMEZONE } from './config.js';
 import {
   NewMessage,
   RegisteredGroup,
@@ -86,6 +86,15 @@ function createSchema(database: Database.Database): void {
   try {
     database.exec(
       `ALTER TABLE scheduled_tasks ADD COLUMN context_mode TEXT DEFAULT 'isolated'`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Add timezone column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN timezone TEXT DEFAULT '${TIMEZONE}'`,
     );
   } catch {
     /* column already exists */
@@ -428,8 +437,8 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, next_run, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, timezone, next_run, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
@@ -439,6 +448,7 @@ export function createTask(
     task.schedule_type,
     task.schedule_value,
     task.context_mode || 'isolated',
+    task.timezone || TIMEZONE,
     task.next_run,
     task.status,
     task.created_at,
@@ -476,6 +486,7 @@ export function updateTask(
       | 'next_run'
       | 'status'
       | 'context_mode'
+      | 'timezone'
       | 'group_folder'
       | 'chat_jid'
     >
@@ -507,6 +518,10 @@ export function updateTask(
   if (updates.context_mode !== undefined) {
     fields.push('context_mode = ?');
     values.push(updates.context_mode);
+  }
+  if (updates.timezone !== undefined) {
+    fields.push('timezone = ?');
+    values.push(updates.timezone);
   }
   if (updates.group_folder !== undefined) {
     fields.push('group_folder = ?');

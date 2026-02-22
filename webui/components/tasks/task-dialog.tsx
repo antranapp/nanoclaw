@@ -13,6 +13,14 @@ import { CronEditor } from './cron-editor';
 import { IntervalPicker } from './interval-picker';
 import type { Task, Group, CreateTaskInput, UpdateTaskInput } from '@/hooks/use-tasks';
 
+const BROWSER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+function isoToLocalDatetime(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 interface TaskDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -66,6 +74,7 @@ export function TaskDialog({ open, onOpenChange, task, groups, onSave }: TaskDia
           schedule_type: scheduleType,
           schedule_value: scheduleValue,
           context_mode: contextMode,
+          timezone: BROWSER_TIMEZONE,
         } satisfies UpdateTaskInput);
       } else {
         await onSave({
@@ -75,6 +84,7 @@ export function TaskDialog({ open, onOpenChange, task, groups, onSave }: TaskDia
           schedule_type: scheduleType,
           schedule_value: scheduleValue,
           context_mode: contextMode,
+          timezone: BROWSER_TIMEZONE,
           status: 'active',
         } satisfies CreateTaskInput);
       }
@@ -147,7 +157,7 @@ export function TaskDialog({ open, onOpenChange, task, groups, onSave }: TaskDia
           <div className="space-y-1.5">
             <Label>Schedule</Label>
             {scheduleType === 'cron' && (
-              <CronEditor value={scheduleValue} onChange={setScheduleValue} />
+              <CronEditor value={scheduleValue} onChange={setScheduleValue} timezone={BROWSER_TIMEZONE} />
             )}
             {scheduleType === 'interval' && (
               <IntervalPicker value={scheduleValue} onChange={setScheduleValue} />
@@ -155,7 +165,7 @@ export function TaskDialog({ open, onOpenChange, task, groups, onSave }: TaskDia
             {scheduleType === 'once' && (
               <input
                 type="datetime-local"
-                value={scheduleValue.slice(0, 16)}
+                value={isoToLocalDatetime(scheduleValue)}
                 onChange={(e) => setScheduleValue(new Date(e.target.value).toISOString())}
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />

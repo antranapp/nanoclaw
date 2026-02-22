@@ -148,6 +148,7 @@ function createApiHttpServer(
           chatJid: opts.chatJid,
           messages: getRecentMessages(opts.chatJid, 200),
           chats: getRegisteredChats(),
+          serverTimezone: TIMEZONE,
         });
       }
 
@@ -177,7 +178,8 @@ function createApiHttpServer(
         const now = new Date().toISOString();
         const scheduleType = body.schedule_type as string;
         const scheduleValue = body.schedule_value as string;
-        const nextRun = calculateNextRun(scheduleType, scheduleValue);
+        const timezone = (body.timezone as string) || TIMEZONE;
+        const nextRun = calculateNextRun(scheduleType, scheduleValue, timezone);
 
         createTask({
           id,
@@ -187,6 +189,7 @@ function createApiHttpServer(
           schedule_type: scheduleType as 'cron' | 'interval' | 'once',
           schedule_value: scheduleValue,
           context_mode: (body.context_mode as 'group' | 'isolated') || 'isolated',
+          timezone,
           next_run: nextRun,
           status: (body.status as 'active' | 'paused') || 'active',
           created_at: now,
@@ -203,14 +206,15 @@ function createApiHttpServer(
         const body = await readJsonBody(req);
         const updates: Record<string, unknown> = {};
 
-        for (const key of ['prompt', 'schedule_type', 'schedule_value', 'context_mode', 'group_folder', 'chat_jid', 'status'] as const) {
+        for (const key of ['prompt', 'schedule_type', 'schedule_value', 'context_mode', 'timezone', 'group_folder', 'chat_jid', 'status'] as const) {
           if (body[key] !== undefined) updates[key] = body[key];
         }
 
         const newType = (updates.schedule_type as string) || existing.schedule_type;
         const newValue = (updates.schedule_value as string) || existing.schedule_value;
+        const tz = (updates.timezone as string) || existing.timezone || TIMEZONE;
         if (updates.schedule_type !== undefined || updates.schedule_value !== undefined) {
-          updates.next_run = calculateNextRun(newType, newValue);
+          updates.next_run = calculateNextRun(newType, newValue, tz);
         }
 
         updateTask(id, updates);
@@ -240,7 +244,7 @@ function createApiHttpServer(
         const id = decodeURIComponent(taskResumeMatch[1]);
         const existing = getTaskById(id);
         if (!existing) return sendJson(res, 404, { error: 'Task not found' });
-        const nextRun = calculateNextRun(existing.schedule_type, existing.schedule_value);
+        const nextRun = calculateNextRun(existing.schedule_type, existing.schedule_value, existing.timezone || TIMEZONE);
         updateTask(id, { status: 'active', next_run: nextRun });
         return sendJson(res, 200, { task: getTaskById(id) });
       }
@@ -402,9 +406,9 @@ function proxyWebSocket(
   proxyReq.end();
 }
 
-function calculateNextRun(scheduleType: string, scheduleValue: string): string | null {
+function calculateNextRun(scheduleType: string, scheduleValue: string, timezone?: string): string | null {
   if (scheduleType === 'cron') {
-    const interval = CronExpressionParser.parse(scheduleValue, { tz: TIMEZONE });
+    const interval = CronExpressionParser.parse(scheduleValue, { tz: timezone || TIMEZONE });
     return interval.next().toISOString();
   }
   if (scheduleType === 'interval') {

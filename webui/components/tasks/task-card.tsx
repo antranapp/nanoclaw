@@ -82,7 +82,22 @@ export function TaskCard({ task, groups, onEdit, onPause, onResume, onDelete }: 
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
         <span>{schedule}</span>
         <span>{groupName}</span>
-        {task.status === 'active' && <span>Next: {nextRun}</span>}
+        {task.status === 'active' && task.next_run && (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="cursor-default">Next: {nextRun}</span>
+              </TooltipTrigger>
+              <TooltipContent>
+                {new Date(task.next_run).toLocaleString(undefined, {
+                  dateStyle: 'medium',
+                  timeStyle: 'short',
+                  timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                })}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
       </div>
 
       {/* Actions */}
