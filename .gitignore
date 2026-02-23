@@ -41,3 +41,5 @@ webui/node_modules/
 firebase-debug.log
 
 .playwright-mcp/
+
+test-results/
