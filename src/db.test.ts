@@ -3,15 +3,20 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   _initTestDatabase,
   createTask,
+  deleteGroupByFolder,
   deleteTask,
   getAllChats,
+  getGroupFolders,
   getMessagesSinceForJids,
   getMessagesSince,
   getNewMessages,
   getRecentMessages,
+  getRecentMessagesByFolder,
   getRegisteredJidsForFolder,
+  getSession,
   getTaskById,
   setRegisteredGroup,
+  setSession,
   storeChatMetadata,
   storeMessage,
   updateTask,
@@ -468,5 +473,258 @@ describe('task CRUD', () => {
 
     deleteTask('task-3');
     expect(getTaskById('task-3')).toBeUndefined();
+  });
+});
+
+// --- getRecentMessagesByFolder ---
+
+describe('getRecentMessagesByFolder', () => {
+  const GROUP: RegisteredGroup = {
+    name: 'Test Group',
+    folder: 'test-group',
+    trigger: '@Andy',
+    added_at: '2024-01-01T00:00:00.000Z',
+  };
+
+  beforeEach(() => {
+    setRegisteredGroup('wa@g.us', GROUP, 'whatsapp');
+    setRegisteredGroup('web:test-group', GROUP, 'web');
+    storeChatMetadata('wa@g.us', '2024-01-01T00:00:00.000Z', 'WA');
+    storeChatMetadata('web:test-group', '2024-01-01T00:00:00.000Z', 'Web');
+  });
+
+  it('returns messages across multiple JIDs for the same folder', () => {
+    store({
+      id: 'wa1',
+      chat_jid: 'wa@g.us',
+      sender: 'alice@wa',
+      sender_name: 'Alice',
+      content: 'from whatsapp',
+      timestamp: '2024-01-01T00:00:01.000Z',
+    });
+    store({
+      id: 'web1',
+      chat_jid: 'web:test-group',
+      sender: 'user@web',
+      sender_name: 'You',
+      content: 'from web',
+      timestamp: '2024-01-01T00:00:02.000Z',
+    });
+
+    const msgs = getRecentMessagesByFolder('test-group', 100);
+    expect(msgs).toHaveLength(2);
+    expect(msgs[0].content).toBe('from whatsapp');
+    expect(msgs[1].content).toBe('from web');
+  });
+
+  it('returns messages in chronological order', () => {
+    store({
+      id: 'late',
+      chat_jid: 'wa@g.us',
+      sender: 'alice@wa',
+      sender_name: 'Alice',
+      content: 'later',
+      timestamp: '2024-01-01T00:00:03.000Z',
+    });
+    store({
+      id: 'early',
+      chat_jid: 'web:test-group',
+      sender: 'user@web',
+      sender_name: 'You',
+      content: 'earlier',
+      timestamp: '2024-01-01T00:00:01.000Z',
+    });
+
+    const msgs = getRecentMessagesByFolder('test-group', 100);
+    expect(msgs[0].content).toBe('earlier');
+    expect(msgs[1].content).toBe('later');
+  });
+
+  it('respects the limit parameter', () => {
+    for (let i = 0; i < 5; i++) {
+      store({
+        id: `msg-${i}`,
+        chat_jid: 'web:test-group',
+        sender: 'user@web',
+        sender_name: 'You',
+        content: `message ${i}`,
+        timestamp: `2024-01-01T00:00:0${i + 1}.000Z`,
+      });
+    }
+
+    const msgs = getRecentMessagesByFolder('test-group', 3);
+    expect(msgs).toHaveLength(3);
+    // Should get the latest 3 in chronological order
+    expect(msgs[0].content).toBe('message 2');
+    expect(msgs[2].content).toBe('message 4');
+  });
+
+  it('returns empty array for unknown folder', () => {
+    const msgs = getRecentMessagesByFolder('nonexistent', 100);
+    expect(msgs).toHaveLength(0);
+  });
+});
+
+// --- getGroupFolders ---
+
+describe('getGroupFolders', () => {
+  it('returns deduplicated group list with web JID detection', () => {
+    const main: RegisteredGroup = {
+      name: 'Main',
+      folder: 'main',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+    };
+    setRegisteredGroup('main@g.us', main, 'whatsapp');
+    setRegisteredGroup('web:main', main, 'web');
+
+    const folders = getGroupFolders();
+    expect(folders).toHaveLength(1);
+    expect(folders[0]).toEqual({
+      name: 'Main',
+      folder: 'main',
+      webJid: 'web:main',
+    });
+  });
+
+  it('returns null webJid when no web JID exists', () => {
+    const group: RegisteredGroup = {
+      name: 'WA Only',
+      folder: 'wa-only',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+    };
+    setRegisteredGroup('wa-only@g.us', group, 'whatsapp');
+
+    const folders = getGroupFolders();
+    expect(folders).toHaveLength(1);
+    expect(folders[0].webJid).toBeNull();
+  });
+
+  it('returns multiple folders sorted', () => {
+    const alpha: RegisteredGroup = {
+      name: 'Alpha',
+      folder: 'alpha',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+    };
+    const beta: RegisteredGroup = {
+      name: 'Beta',
+      folder: 'beta',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+    };
+    setRegisteredGroup('web:alpha', alpha, 'web');
+    setRegisteredGroup('web:beta', beta, 'web');
+
+    const folders = getGroupFolders();
+    expect(folders).toHaveLength(2);
+    expect(folders.map((f) => f.folder)).toEqual(['alpha', 'beta']);
+  });
+
+  it('returns empty array when no groups registered', () => {
+    const folders = getGroupFolders();
+    expect(folders).toHaveLength(0);
+  });
+});
+
+// --- deleteGroupByFolder ---
+
+describe('deleteGroupByFolder', () => {
+  const GROUP: RegisteredGroup = {
+    name: 'Doomed',
+    folder: 'doomed',
+    trigger: '@Andy',
+    added_at: '2024-01-01T00:00:00.000Z',
+  };
+
+  beforeEach(() => {
+    setRegisteredGroup('wa@g.us', GROUP, 'whatsapp');
+    setRegisteredGroup('web:doomed', GROUP, 'web');
+    storeChatMetadata('wa@g.us', '2024-01-01T00:00:00.000Z', 'WA');
+    storeChatMetadata('web:doomed', '2024-01-01T00:00:00.000Z', 'Web');
+
+    store({
+      id: 'msg1',
+      chat_jid: 'wa@g.us',
+      sender: 'alice@wa',
+      sender_name: 'Alice',
+      content: 'hello',
+      timestamp: '2024-01-01T00:00:01.000Z',
+    });
+    store({
+      id: 'msg2',
+      chat_jid: 'web:doomed',
+      sender: 'user@web',
+      sender_name: 'You',
+      content: 'hi',
+      timestamp: '2024-01-01T00:00:02.000Z',
+    });
+
+    createTask({
+      id: 'task-doom',
+      group_folder: 'doomed',
+      chat_jid: 'wa@g.us',
+      prompt: 'doomed task',
+      schedule_type: 'once',
+      schedule_value: '2024-06-01T00:00:00.000Z',
+      context_mode: 'isolated',
+      next_run: null,
+      status: 'active',
+      created_at: '2024-01-01T00:00:00.000Z',
+    });
+
+    setSession('doomed', 'session-123');
+  });
+
+  it('deletes all data for the folder', () => {
+    deleteGroupByFolder('doomed');
+
+    // Registered groups removed
+    expect(getRegisteredJidsForFolder('doomed')).toHaveLength(0);
+
+    // Messages removed
+    expect(getRecentMessages('wa@g.us', 100)).toHaveLength(0);
+    expect(getRecentMessages('web:doomed', 100)).toHaveLength(0);
+
+    // Chats removed
+    const chats = getAllChats();
+    expect(chats.find((c) => c.jid === 'wa@g.us')).toBeUndefined();
+    expect(chats.find((c) => c.jid === 'web:doomed')).toBeUndefined();
+
+    // Task removed
+    expect(getTaskById('task-doom')).toBeUndefined();
+
+    // Session removed
+    expect(getSession('doomed')).toBeUndefined();
+  });
+
+  it('does nothing for non-existent folder', () => {
+    // Should not throw
+    deleteGroupByFolder('nonexistent');
+  });
+
+  it('does not affect other groups', () => {
+    const other: RegisteredGroup = {
+      name: 'Safe',
+      folder: 'safe',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+    };
+    setRegisteredGroup('web:safe', other, 'web');
+    storeChatMetadata('web:safe', '2024-01-01T00:00:00.000Z', 'Safe');
+    store({
+      id: 'safe-msg',
+      chat_jid: 'web:safe',
+      sender: 'user@web',
+      sender_name: 'You',
+      content: 'safe message',
+      timestamp: '2024-01-01T00:00:01.000Z',
+    });
+
+    deleteGroupByFolder('doomed');
+
+    expect(getRegisteredJidsForFolder('safe')).toHaveLength(1);
+    expect(getRecentMessages('web:safe', 100)).toHaveLength(1);
   });
 });

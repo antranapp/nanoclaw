@@ -7,12 +7,20 @@ import { WebChannel } from '../channels/web.js';
 vi.mock('../db.js', () => ({
   getRegisteredChats: vi.fn(() => []),
   getRecentMessages: vi.fn(() => []),
+  getRecentMessagesByFolder: vi.fn(() => []),
+  getGroupFolders: vi.fn(() => []),
+  deleteGroupByFolder: vi.fn(),
+  getRegisteredJidsForFolder: vi.fn(() => []),
   getAllTasks: vi.fn(() => []),
   getTaskById: vi.fn(),
   createTask: vi.fn(),
   updateTask: vi.fn(),
   deleteTask: vi.fn(),
   getAllRegisteredGroups: vi.fn(() => ({})),
+}));
+
+vi.mock('../group-folder.js', () => ({
+  isValidGroupFolder: vi.fn((folder: string) => /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(folder)),
 }));
 
 vi.mock('../config.js', () => ({
@@ -67,10 +75,14 @@ function httpRequest(
 describe('nextjs-server API', () => {
   let server: WebUiServer;
   let channel: WebChannel;
+  let mockRegisterGroup: (jid: string, group: any) => void;
+  let mockDeleteGroup: (folder: string) => void;
   const PORT = 14317; // high port to avoid conflicts
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mockRegisterGroup = vi.fn();
+    mockDeleteGroup = vi.fn();
 
     channel = new WebChannel({
       assistantName: 'TestBot',
@@ -85,6 +97,8 @@ describe('nextjs-server API', () => {
       chatJid: 'web:main',
       host: '127.0.0.1',
       port: PORT,
+      registerGroup: mockRegisterGroup,
+      deleteGroup: mockDeleteGroup,
     });
   });
 
@@ -94,9 +108,12 @@ describe('nextjs-server API', () => {
 
   // --- GET /api/bootstrap ---
 
-  it('GET /api/bootstrap returns initial state', async () => {
+  it('GET /api/bootstrap returns initial state with groups', async () => {
     vi.mocked(db.getRecentMessages).mockReturnValue([]);
     vi.mocked(db.getRegisteredChats).mockReturnValue([]);
+    vi.mocked(db.getGroupFolders).mockReturnValue([
+      { name: 'Main', folder: 'main', webJid: 'web:main' },
+    ]);
 
     const res = await httpRequest(PORT, 'GET', '/api/bootstrap');
 
@@ -107,11 +124,14 @@ describe('nextjs-server API', () => {
         chatJid: 'web:main',
         messages: [],
         chats: [],
+        groups: [{ name: 'Main', folder: 'main', webJid: 'web:main' }],
+        activeFolder: 'main',
         serverTimezone: 'America/New_York',
       }),
     );
     expect(db.getRecentMessages).toHaveBeenCalledWith('web:main', 200);
     expect(db.getRegisteredChats).toHaveBeenCalled();
+    expect(db.getGroupFolders).toHaveBeenCalled();
   });
 
   // --- POST /api/messages ---
@@ -315,22 +335,138 @@ describe('nextjs-server API', () => {
 
   // --- GET /api/groups ---
 
-  it('GET /api/groups returns registered groups', async () => {
-    vi.mocked(db.getAllRegisteredGroups).mockReturnValue({
-      'web:main': {
-        name: 'Main',
-        folder: 'main',
-        trigger: '@Andy',
-        added_at: '2026-01-01T00:00:00Z',
-      },
-    });
+  it('GET /api/groups returns deduplicated group folders', async () => {
+    vi.mocked(db.getGroupFolders).mockReturnValue([
+      { name: 'Main', folder: 'main', webJid: 'web:main' },
+      { name: 'Work', folder: 'work', webJid: 'web:work' },
+    ]);
 
     const res = await httpRequest(PORT, 'GET', '/api/groups');
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      groups: [{ jid: 'web:main', name: 'Main', folder: 'main' }],
+      groups: [
+        { name: 'Main', folder: 'main', webJid: 'web:main' },
+        { name: 'Work', folder: 'work', webJid: 'web:work' },
+      ],
     });
+  });
+
+  // --- POST /api/groups ---
+
+  it('POST /api/groups creates a new group', async () => {
+    vi.mocked(db.getRegisteredJidsForFolder).mockReturnValue([]);
+
+    const res = await httpRequest(PORT, 'POST', '/api/groups', {
+      name: 'My Project',
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({
+      group: { name: 'My Project', folder: 'my-project', webJid: 'web:my-project' },
+    });
+    expect(mockRegisterGroup).toHaveBeenCalledWith(
+      'web:my-project',
+      expect.objectContaining({
+        name: 'My Project',
+        folder: 'my-project',
+        requiresTrigger: false,
+      }),
+    );
+  });
+
+  it('POST /api/groups rejects empty name', async () => {
+    const res = await httpRequest(PORT, 'POST', '/api/groups', {
+      name: '   ',
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'name required' });
+  });
+
+  it('POST /api/groups returns 409 for duplicate folder', async () => {
+    vi.mocked(db.getRegisteredJidsForFolder).mockReturnValue(['web:work']);
+
+    const res = await httpRequest(PORT, 'POST', '/api/groups', {
+      name: 'Work',
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: 'Group already exists' });
+  });
+
+  // --- DELETE /api/groups/:folder ---
+
+  it('DELETE /api/groups/:folder deletes a group', async () => {
+    vi.mocked(db.getRegisteredJidsForFolder).mockReturnValue(['web:work']);
+
+    const res = await httpRequest(PORT, 'DELETE', '/api/groups/work');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    expect(mockDeleteGroup).toHaveBeenCalledWith('work');
+  });
+
+  it('DELETE /api/groups/:folder rejects main group', async () => {
+    const res = await httpRequest(PORT, 'DELETE', '/api/groups/main');
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: 'Cannot delete main group' });
+  });
+
+  it('DELETE /api/groups/:folder returns 404 for missing group', async () => {
+    vi.mocked(db.getRegisteredJidsForFolder).mockReturnValue([]);
+
+    const res = await httpRequest(PORT, 'DELETE', '/api/groups/nonexistent');
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Group not found' });
+  });
+
+  // --- GET /api/groups/:folder/messages ---
+
+  it('GET /api/groups/:folder/messages returns cross-channel history', async () => {
+    vi.mocked(db.getRegisteredJidsForFolder).mockReturnValue([
+      'wa@g.us',
+      'web:test',
+    ]);
+    vi.mocked(db.getRecentMessagesByFolder).mockReturnValue([
+      {
+        id: 'm1',
+        chat_jid: 'wa@g.us',
+        sender: 'alice',
+        sender_name: 'Alice',
+        content: 'from wa',
+        timestamp: '2026-01-01T00:00:01Z',
+      },
+      {
+        id: 'm2',
+        chat_jid: 'web:test',
+        sender: 'you',
+        sender_name: 'You',
+        content: 'from web',
+        timestamp: '2026-01-01T00:00:02Z',
+      },
+    ] as any);
+
+    const res = await httpRequest(PORT, 'GET', '/api/groups/test/messages');
+
+    expect(res.status).toBe(200);
+    expect((res.body as any).messages).toHaveLength(2);
+    expect(db.getRecentMessagesByFolder).toHaveBeenCalledWith('test', 200);
+  });
+
+  it('GET /api/groups/:folder/messages returns 404 for unknown folder', async () => {
+    vi.mocked(db.getRegisteredJidsForFolder).mockReturnValue([]);
+
+    const res = await httpRequest(
+      PORT,
+      'GET',
+      '/api/groups/nonexistent/messages',
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Group not found' });
   });
 
   // --- 404 for unknown routes ---

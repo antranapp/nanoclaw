@@ -25,9 +25,14 @@ export function ChatPanel({ messages, isTyping, activeChatJid, onSend }: Props) 
   const [draft, setDraft] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // Scroll instantly when chat is opened (activeChatJid changes);
+  // smooth-scroll for new messages / typing within the same chat.
+  const prevChatRef = useRef(activeChatJid);
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isTyping]);
+    const instant = prevChatRef.current !== activeChatJid;
+    if (instant) prevChatRef.current = activeChatJid;
+    bottomRef.current?.scrollIntoView({ behavior: instant ? 'instant' : 'smooth' });
+  }, [messages, isTyping, activeChatJid]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

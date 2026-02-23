@@ -772,6 +772,99 @@ export function getRegisteredJidsForFolder(folder: string): string[] {
   return rows.map((r) => r.jid);
 }
 
+/**
+ * Get recent messages across ALL JIDs bound to a folder (cross-channel history).
+ * Returns messages in chronological order.
+ */
+export function getRecentMessagesByFolder(
+  folder: string,
+  limit = 200,
+): NewMessage[] {
+  const jids = getRegisteredJidsForFolder(folder);
+  if (jids.length === 0) return [];
+
+  const placeholders = jids.map(() => '?').join(',');
+  const rows = db
+    .prepare(
+      `
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message
+      FROM messages
+      WHERE chat_jid IN (${placeholders})
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `,
+    )
+    .all(...jids, limit) as NewMessage[];
+  return rows.reverse();
+}
+
+export interface GroupFolderInfo {
+  name: string;
+  folder: string;
+  webJid: string | null;
+}
+
+/**
+ * Get deduplicated group list grouped by folder.
+ * Returns one entry per unique folder with the group name and web JID if it exists.
+ */
+export function getGroupFolders(): GroupFolderInfo[] {
+  const rows = db
+    .prepare('SELECT jid, name, folder FROM registered_groups ORDER BY folder')
+    .all() as Array<{ jid: string; name: string; folder: string }>;
+
+  const folderMap = new Map<
+    string,
+    { name: string; folder: string; webJid: string | null }
+  >();
+
+  for (const row of rows) {
+    const existing = folderMap.get(row.folder);
+    if (!existing) {
+      folderMap.set(row.folder, {
+        name: row.name,
+        folder: row.folder,
+        webJid: row.jid.startsWith('web:') ? row.jid : null,
+      });
+    } else if (row.jid.startsWith('web:')) {
+      existing.webJid = row.jid;
+    }
+  }
+
+  return Array.from(folderMap.values());
+}
+
+/**
+ * Delete a group and all its associated data by folder.
+ * Removes registered_groups, messages, chats, scheduled_tasks, and sessions.
+ * Does NOT delete the group folder on disk.
+ */
+export function deleteGroupByFolder(folder: string): void {
+  const jids = getRegisteredJidsForFolder(folder);
+  if (jids.length === 0) return;
+
+  const placeholders = jids.map(() => '?').join(',');
+
+  db.transaction(() => {
+    // Delete messages for all JIDs in this folder
+    db.prepare(`DELETE FROM messages WHERE chat_jid IN (${placeholders})`).run(
+      ...jids,
+    );
+    // Delete chats
+    db.prepare(`DELETE FROM chats WHERE jid IN (${placeholders})`).run(...jids);
+    // Delete scheduled tasks
+    db.prepare('DELETE FROM scheduled_tasks WHERE group_folder = ?').run(
+      folder,
+    );
+    // Delete sessions
+    db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(folder);
+    // Delete registered groups
+    db.prepare(
+      `DELETE FROM registered_groups WHERE jid IN (${placeholders})`,
+    ).run(...jids);
+  })();
+}
+
 // --- JSON migration ---
 
 function migrateJsonState(): void {

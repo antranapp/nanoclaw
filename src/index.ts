@@ -17,6 +17,7 @@ import {
   writeTasksSnapshot,
 } from './process-runner.js';
 import {
+  deleteGroupByFolder,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -179,6 +180,46 @@ function ensureWebMainBinding(): void {
   );
 
   storeChatMetadata(WEB_MAIN_JID, now, 'Web UI');
+}
+
+/**
+ * Ensure every registered folder has a web:{folder} JID for web access.
+ */
+function ensureAllWebBindings(): void {
+  for (const folder of getUniqueFolders()) {
+    const webJid = `web:${folder}`;
+    if (registeredGroups[webJid]) continue;
+
+    const existingGroup = getFolderGroup(folder);
+    if (!existingGroup) continue;
+
+    const now = new Date().toISOString();
+    registerGroup(webJid, {
+      ...existingGroup,
+      added_at: existingGroup.added_at || now,
+      requiresTrigger: false,
+    });
+    storeChatMetadata(webJid, now, existingGroup.name);
+  }
+}
+
+/**
+ * Remove a group and all its associated data from in-memory state and database.
+ */
+function deleteGroupFromState(folder: string): void {
+  // Remove all JIDs for this folder from in-memory map
+  for (const [jid, group] of Object.entries(registeredGroups)) {
+    if (group.folder === folder) {
+      delete registeredGroups[jid];
+    }
+  }
+
+  // Remove from database
+  deleteGroupByFolder(folder);
+
+  // Clean up agent timestamp tracking
+  delete lastAgentTimestampByFolder[folder];
+  saveState();
 }
 
 async function sendOutbound(
@@ -563,6 +604,7 @@ async function main(): Promise<void> {
 
   if (enableWebUi || enableApi) {
     ensureWebMainBinding();
+    ensureAllWebBindings();
   }
 
   // Graceful shutdown handlers
@@ -614,6 +656,9 @@ async function main(): Promise<void> {
       chatJid: WEB_MAIN_JID,
       host: '127.0.0.1',
       port,
+      registerGroup: (jid: string, group: RegisteredGroup) =>
+        registerGroup(jid, group),
+      deleteGroup: (folder: string) => deleteGroupFromState(folder),
     };
 
     if (enableWebUi) {

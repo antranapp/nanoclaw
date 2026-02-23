@@ -11,6 +11,10 @@ import { TIMEZONE } from '../config.js';
 import {
   getRegisteredChats,
   getRecentMessages,
+  getRecentMessagesByFolder,
+  getGroupFolders,
+  deleteGroupByFolder,
+  getRegisteredJidsForFolder,
   getAllTasks,
   getTaskById,
   createTask,
@@ -18,7 +22,9 @@ import {
   deleteTask,
   getAllRegisteredGroups,
 } from '../db.js';
+import { isValidGroupFolder } from '../group-folder.js';
 import { logger } from '../logger.js';
+import type { RegisteredGroup } from '../types.js';
 
 export interface WebUiServer {
   url: string;
@@ -31,6 +37,8 @@ export interface ApiServerOpts {
   chatJid: string;
   host: string;
   port: number;
+  registerGroup?: (jid: string, group: RegisteredGroup) => void;
+  deleteGroup?: (folder: string) => void;
 }
 
 export interface NextJsServerOpts extends ApiServerOpts {}
@@ -148,6 +156,8 @@ function createApiHttpServer(
           chatJid: opts.chatJid,
           messages: getRecentMessages(opts.chatJid, 200),
           chats: getRegisteredChats(),
+          groups: getGroupFolders(),
+          activeFolder: 'main',
           serverTimezone: TIMEZONE,
         });
       }
@@ -250,13 +260,82 @@ function createApiHttpServer(
       }
 
       if (pathname === '/api/groups' && req.method === 'GET') {
-        const groups = getAllRegisteredGroups();
-        const groupList = Object.entries(groups).map(([jid, g]) => ({
-          jid,
-          name: g.name,
-          folder: g.folder,
-        }));
-        return sendJson(res, 200, { groups: groupList });
+        return sendJson(res, 200, { groups: getGroupFolders() });
+      }
+
+      if (pathname === '/api/groups' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        if (!name) return sendJson(res, 400, { error: 'name required' });
+
+        const folder = name
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, 64);
+
+        if (!isValidGroupFolder(folder)) {
+          return sendJson(res, 400, { error: 'Invalid group name' });
+        }
+
+        // Check if folder already exists
+        const existingJids = getRegisteredJidsForFolder(folder);
+        if (existingJids.length > 0) {
+          return sendJson(res, 409, { error: 'Group already exists' });
+        }
+
+        const webJid = `web:${folder}`;
+        const now = new Date().toISOString();
+        const group: RegisteredGroup = {
+          name,
+          folder,
+          trigger: `@${opts.assistantName}`,
+          added_at: now,
+          requiresTrigger: false,
+        };
+
+        if (opts.registerGroup) {
+          opts.registerGroup(webJid, group);
+        }
+
+        return sendJson(res, 201, {
+          group: { name, folder, webJid },
+        });
+      }
+
+      const groupDeleteMatch = pathname?.match(/^\/api\/groups\/([^/]+)$/);
+      if (groupDeleteMatch && req.method === 'DELETE') {
+        const folder = decodeURIComponent(groupDeleteMatch[1]);
+
+        if (folder === 'main') {
+          return sendJson(res, 403, { error: 'Cannot delete main group' });
+        }
+
+        const existingJids = getRegisteredJidsForFolder(folder);
+        if (existingJids.length === 0) {
+          return sendJson(res, 404, { error: 'Group not found' });
+        }
+
+        if (opts.deleteGroup) {
+          opts.deleteGroup(folder);
+        }
+
+        return sendJson(res, 200, { ok: true });
+      }
+
+      const groupMessagesMatch = pathname?.match(
+        /^\/api\/groups\/([^/]+)\/messages$/,
+      );
+      if (groupMessagesMatch && req.method === 'GET') {
+        const folder = decodeURIComponent(groupMessagesMatch[1]);
+
+        const existingJids = getRegisteredJidsForFolder(folder);
+        if (existingJids.length === 0) {
+          return sendJson(res, 404, { error: 'Group not found' });
+        }
+
+        const messages = getRecentMessagesByFolder(folder, 200);
+        return sendJson(res, 200, { messages });
       }
 
       // Non-API request: proxy to Next.js or 404

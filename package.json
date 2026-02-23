@@ -17,6 +17,7 @@
     "setup": "tsx setup/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "npx playwright test",
     "webui:dev": "trap 'kill 0' INT TERM; tsx src/index.ts --api --no-whatsapp & cd webui && PORT=4319 BACKEND_URL=http://127.0.0.1:4317 NEXT_PUBLIC_WS_URL=ws://127.0.0.1:4317/api/ws npm run dev",
     "webui:dev:wa": "trap 'kill 0' INT TERM; tsx src/index.ts --api & cd webui && PORT=4319 BACKEND_URL=http://127.0.0.1:4317 NEXT_PUBLIC_WS_URL=ws://127.0.0.1:4317/api/ws npm run dev",
     "webui:frontend": "cd webui && PORT=4319 BACKEND_URL=http://127.0.0.1:4317 NEXT_PUBLIC_WS_URL=ws://127.0.0.1:4317/api/ws npm run dev"
@@ -34,6 +35,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.10.0",
     "@types/qrcode-terminal": "^0.12.2",
