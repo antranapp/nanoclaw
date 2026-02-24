@@ -190,6 +190,15 @@ async function runTask(
 
   const durationMs = Date.now() - startTime;
 
+  // Guard: task may have been deleted mid-execution (via IPC or WebUI)
+  if (!getTaskById(task.id)) {
+    logger.warn(
+      { taskId: task.id, durationMs },
+      'Task was deleted during execution, skipping run log',
+    );
+    return;
+  }
+
   logTaskRun({
     task_id: task.id,
     run_at: new Date().toISOString(),
