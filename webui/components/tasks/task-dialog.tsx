@@ -11,9 +11,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { HelpCircle } from 'lucide-react';
 import { CronEditor } from './cron-editor';
 import { IntervalPicker } from './interval-picker';
+import { BROWSER_TIMEZONE } from '@/lib/date';
 import type { Task, Group, CreateTaskInput, UpdateTaskInput } from '@/hooks/use-tasks';
-
-const BROWSER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 function isoToLocalDatetime(iso: string): string {
   const d = new Date(iso);

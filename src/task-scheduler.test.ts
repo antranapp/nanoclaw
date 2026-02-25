@@ -84,7 +84,7 @@ describe('task scheduler', () => {
     expect(task?.status).toBe('paused');
   });
 
-  it('skips logTaskRun when task is deleted mid-execution (race condition)', async () => {
+  it('skips run log when task is deleted mid-execution (race condition)', async () => {
     setRegisteredGroup('web:main', MAIN_GROUP, 'web');
 
     createTask({
@@ -156,6 +156,7 @@ describe('task scheduler', () => {
       return { status: 'success', result: 'all good' } as any;
     });
 
+    const sendMessage = vi.fn(async () => {});
     const enqueueTask = vi.fn(
       (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
         void fn();
@@ -167,7 +168,7 @@ describe('task scheduler', () => {
       getSessions: () => ({}),
       queue: { enqueueTask } as any,
       onProcess: () => {},
-      sendMessage: async () => {},
+      sendMessage,
     });
 
     await vi.advanceTimersByTimeAsync(10);
@@ -176,12 +177,74 @@ describe('task scheduler', () => {
     const task = getTaskById('task-normal');
     expect(task).toBeDefined();
     expect(task!.status).toBe('completed');
-    expect(task!.last_result).toBe('all good');
+    expect(task!.last_run_status).toBe('success');
+    expect(task!.last_duration_ms).toBeGreaterThanOrEqual(0);
+    expect(task!.run_state).toBe('idle');
 
     // No race condition warning
     expect(vi.mocked(logger.warn)).not.toHaveBeenCalledWith(
       expect.objectContaining({ taskId: 'task-normal' }),
       'Task was deleted during execution, skipping run log',
+    );
+
+    // Chat notifications: start + finish
+    expect(sendMessage).toHaveBeenCalledWith(
+      'web:main',
+      expect.stringContaining('Task task-nor started'),
+    );
+    expect(sendMessage).toHaveBeenCalledWith(
+      'web:main',
+      expect.stringContaining('Task task-nor finished'),
+    );
+  });
+
+  it('sends failure notification on task error', async () => {
+    setRegisteredGroup('web:main', MAIN_GROUP, 'web');
+
+    createTask({
+      id: 'task-fail',
+      group_folder: 'main',
+      chat_jid: 'web:main',
+      prompt: 'failing work',
+      schedule_type: 'once',
+      schedule_value: '2026-02-22T00:00:00.000Z',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 60_000).toISOString(),
+      status: 'active',
+      created_at: '2026-02-22T00:00:00.000Z',
+    });
+
+    const { runAgent } = await import('./process-runner.js');
+    vi.mocked(runAgent).mockImplementation(async () => {
+      return { status: 'error', error: 'something broke' } as any;
+    });
+
+    const sendMessage = vi.fn(async () => {});
+    const enqueueTask = vi.fn(
+      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        void fn();
+      },
+    );
+
+    startSchedulerLoop({
+      registeredGroups: () => ({ 'web:main': MAIN_GROUP }),
+      getSessions: () => ({}),
+      queue: { enqueueTask } as any,
+      onProcess: () => {},
+      sendMessage,
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    const task = getTaskById('task-fail');
+    expect(task).toBeDefined();
+    expect(task!.last_run_status).toBe('error');
+    expect(task!.last_error).toBe('something broke');
+
+    // Should have error notification
+    expect(sendMessage).toHaveBeenCalledWith(
+      'web:main',
+      expect.stringContaining('Task task-fai failed'),
     );
   });
 });

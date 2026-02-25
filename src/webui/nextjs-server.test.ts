@@ -13,10 +13,17 @@ vi.mock('../db.js', () => ({
   getRegisteredJidsForFolder: vi.fn(() => []),
   getAllTasks: vi.fn(() => []),
   getTaskById: vi.fn(),
+  getTaskRunEvents: vi.fn(() => []),
   createTask: vi.fn(),
   updateTask: vi.fn(),
   deleteTask: vi.fn(),
   getAllRegisteredGroups: vi.fn(() => ({})),
+}));
+
+vi.mock('../task-events.js', () => ({
+  taskEventBus: {
+    onTaskUpdate: vi.fn(() => () => {}),
+  },
 }));
 
 vi.mock('../group-folder.js', () => ({
@@ -680,6 +687,40 @@ describe('nextjs-server API', () => {
     // After client closes, sending a channel event shouldn't throw
     await channel.sendMessage('web:main', 'After close');
     // If we get here without error, the cleanup worked
+  });
+
+  // --- GET /api/tasks/:id/runs ---
+
+  it('GET /api/tasks/:id/runs returns events', async () => {
+    vi.mocked(db.getTaskById).mockReturnValue({ id: 'task-1' } as any);
+    const fakeEvents = [
+      { id: 1, task_id: 'task-1', run_id: 'run-1', event_type: 'start', event_at: '2026-01-01T00:00:00Z' },
+      { id: 2, task_id: 'task-1', run_id: 'run-1', event_type: 'finish', event_at: '2026-01-01T00:01:00Z', status: 'success', duration_ms: 60000 },
+    ];
+    vi.mocked(db.getTaskRunEvents).mockReturnValue(fakeEvents as any);
+
+    const res = await httpRequest(PORT, 'GET', '/api/tasks/task-1/runs');
+
+    expect(res.status).toBe(200);
+    expect((res.body as any).events).toEqual(fakeEvents);
+    expect(db.getTaskRunEvents).toHaveBeenCalledWith('task-1', 20);
+  });
+
+  it('GET /api/tasks/:id/runs returns 404 for missing task', async () => {
+    vi.mocked(db.getTaskById).mockReturnValue(undefined);
+
+    const res = await httpRequest(PORT, 'GET', '/api/tasks/nonexistent/runs');
+
+    expect(res.status).toBe(404);
+  });
+
+  it('GET /api/tasks/:id/runs respects limit param', async () => {
+    vi.mocked(db.getTaskById).mockReturnValue({ id: 'task-1' } as any);
+    vi.mocked(db.getTaskRunEvents).mockReturnValue([]);
+
+    await httpRequest(PORT, 'GET', '/api/tasks/task-1/runs?limit=50');
+
+    expect(db.getTaskRunEvents).toHaveBeenCalledWith('task-1', 50);
   });
 
   // --- Task creation with different schedule types ---

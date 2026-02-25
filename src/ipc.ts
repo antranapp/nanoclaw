@@ -9,6 +9,7 @@ import {
   MAIN_GROUP_FOLDER,
   TIMEZONE,
 } from './config.js';
+import { localToUtcIso } from './tz.js';
 import { AvailableGroup } from './process-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
@@ -160,6 +161,7 @@ export async function processTaskIpc(
     schedule_type?: string;
     schedule_value?: string;
     context_mode?: string;
+    timezone?: string;
     groupFolder?: string;
     chatJid?: string;
     targetJid?: string;
@@ -235,15 +237,25 @@ export async function processTaskIpc(
           }
           nextRun = new Date(Date.now() + ms).toISOString();
         } else if (scheduleType === 'once') {
-          const scheduled = new Date(data.schedule_value);
-          if (isNaN(scheduled.getTime())) {
-            logger.warn(
-              { scheduleValue: data.schedule_value },
-              'Invalid timestamp',
-            );
-            break;
+          // MCP server sends UTC ISO strings; also handle local times for
+          // backward compatibility with direct IPC callers.
+          const sv = data.schedule_value as string;
+          if (/[Zz]$/.test(sv) || /[+-]\d{2}:\d{2}$/.test(sv)) {
+            const d = new Date(sv);
+            if (isNaN(d.getTime())) {
+              logger.warn({ scheduleValue: sv }, 'Invalid timestamp');
+              break;
+            }
+            nextRun = d.toISOString();
+          } else {
+            try {
+              const tz = (data.timezone as string) || TIMEZONE;
+              nextRun = localToUtcIso(sv, tz);
+            } catch {
+              logger.warn({ scheduleValue: sv }, 'Invalid timestamp');
+              break;
+            }
           }
-          nextRun = scheduled.toISOString();
         }
 
         const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -259,6 +271,7 @@ export async function processTaskIpc(
           schedule_type: scheduleType,
           schedule_value: data.schedule_value,
           context_mode: contextMode,
+          timezone: (data.timezone as string) || TIMEZONE,
           next_run: nextRun,
           status: 'active',
           created_at: new Date().toISOString(),

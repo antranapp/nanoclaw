@@ -96,6 +96,13 @@ export class GroupQueue {
 
     if (state.active) {
       state.pendingTasks.push({ id: taskId, groupKey, fn });
+      // If an interactive agent is occupying the slot, signal it to close
+      // so the scheduled task can run promptly.  The interactive session
+      // will resume on the user's next message.
+      if (!state.isTaskContainer) {
+        logger.info({ groupKey, taskId }, 'Closing interactive agent to run scheduled task');
+        this.closeStdin(groupKey);
+      }
       logger.debug({ groupKey, taskId }, 'Agent active, task queued');
       return;
     }

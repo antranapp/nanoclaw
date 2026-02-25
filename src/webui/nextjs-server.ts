@@ -8,6 +8,7 @@ import { randomUUID } from 'crypto';
 
 import type { WebChannel, WebChannelEvent } from '../channels/web.js';
 import { TIMEZONE } from '../config.js';
+import { localToUtcIso } from '../tz.js';
 import {
   getRegisteredChats,
   getRecentMessages,
@@ -17,11 +18,13 @@ import {
   getRegisteredJidsForFolder,
   getAllTasks,
   getTaskById,
+  getTaskRunEvents,
   createTask,
   updateTask,
   deleteTask,
   getAllRegisteredGroups,
 } from '../db.js';
+import { taskEventBus } from '../task-events.js';
 import { isValidGroupFolder } from '../group-folder.js';
 import { logger } from '../logger.js';
 import type { RegisteredGroup } from '../types.js';
@@ -207,6 +210,19 @@ function createApiHttpServer(
         return sendJson(res, 201, { task: getTaskById(id) });
       }
 
+      const taskRunsMatch = pathname?.match(/^\/api\/tasks\/([^/]+)\/runs$/);
+      if (taskRunsMatch && req.method === 'GET') {
+        const id = decodeURIComponent(taskRunsMatch[1]);
+        const existing = getTaskById(id);
+        if (!existing) return sendJson(res, 404, { error: 'Task not found' });
+
+        const url = new URL(req.url ?? '/', 'http://localhost');
+        const limitParam = url.searchParams.get('limit');
+        const limit = Math.min(Math.max(parseInt(limitParam || '20', 10) || 20, 1), 200);
+        const events = getTaskRunEvents(id, limit);
+        return sendJson(res, 200, { events });
+      }
+
       const taskPutMatch = pathname?.match(/^\/api\/tasks\/([^/]+)$/);
       if (taskPutMatch && req.method === 'PUT') {
         const id = decodeURIComponent(taskPutMatch[1]);
@@ -369,6 +385,19 @@ function createApiHttpServer(
     }
   });
 
+  // Single listener that broadcasts task updates to all connected sockets.
+  // This keeps exactly 1 listener on the event bus regardless of connection
+  // count, avoiding the MaxListenersExceededWarning that per-socket listeners
+  // would trigger.
+  taskEventBus.onTaskUpdate((event) => {
+    const frame = JSON.stringify({ type: 'task_update', task: event.task });
+    for (const ws of sockets) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(frame);
+      }
+    }
+  });
+
   wss.on('connection', (ws) => {
     sockets.add(ws);
 
@@ -495,7 +524,12 @@ function calculateNextRun(scheduleType: string, scheduleValue: string, timezone?
     return new Date(Date.now() + ms).toISOString();
   }
   if (scheduleType === 'once') {
-    return scheduleValue;
+    // If already a UTC ISO string (has Z or +/- offset), use as-is
+    if (/[Zz]$/.test(scheduleValue) || /[+-]\d{2}:\d{2}$/.test(scheduleValue)) {
+      return new Date(scheduleValue).toISOString();
+    }
+    // Otherwise interpret as local time in the given timezone
+    return localToUtcIso(scheduleValue, timezone || TIMEZONE);
   }
   return null;
 }

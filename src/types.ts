@@ -42,6 +42,25 @@ export interface ScheduledTask {
   last_result: string | null;
   status: 'active' | 'paused' | 'completed';
   created_at: string;
+  // Run-state fields (orthogonal to status)
+  run_state: 'idle' | 'running';
+  current_run_id: string | null;
+  run_started_at: string | null;
+  last_run_status: 'success' | 'error' | null;
+  last_error: string | null;
+  last_duration_ms: number | null;
+}
+
+export interface TaskRunEvent {
+  id: number;
+  task_id: string;
+  run_id: string;
+  event_type: 'start' | 'finish';
+  event_at: string;
+  status: 'success' | 'error' | null;
+  duration_ms: number | null;
+  result: string | null;
+  error: string | null;
 }
 
 export interface TaskRunLog {

@@ -450,6 +450,7 @@ async function runQuery(
             NANOCLAW_GROUP_FOLDER: agentInput.groupFolder,
             NANOCLAW_IS_MAIN: agentInput.isMain ? '1' : '0',
             NANOCLAW_IPC_DIR: IPC_DIR,
+            NANOCLAW_TIMEZONE: process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone,
           },
         },
       },
@@ -559,6 +560,14 @@ async function main(): Promise<void> {
         break;
       }
 
+      // Scheduled tasks are one-shot: exit after the first query completes.
+      // Without this, the agent would enter waitForIpcMessage() and block
+      // for up to IDLE_TIMEOUT (30 min) before the _close sentinel is written.
+      if (agentInput.isScheduledTask) {
+        log('Scheduled task completed, exiting');
+        break;
+      }
+
       // Emit session update so host can track it
       writeOutput({ status: 'success', result: null, newSessionId: sessionId });
 
@@ -585,6 +594,12 @@ async function main(): Promise<void> {
     });
     process.exit(1);
   }
+
+  // Force clean exit — the Claude SDK may leave MCP server subprocesses
+  // or other handles alive that prevent natural event loop drain.
+  // Without this, the process hangs until the hard timeout kills it
+  // with SIGTERM (exit code null), which is falsely reported as an error.
+  process.exit(0);
 }
 
 main();

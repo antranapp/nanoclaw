@@ -9,6 +9,7 @@ import {
   NewMessage,
   RegisteredGroup,
   ScheduledTask,
+  TaskRunEvent,
   TaskRunLog,
 } from './types.js';
 
@@ -65,6 +66,21 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_task_run_logs ON task_run_logs(task_id, run_at);
 
+    CREATE TABLE IF NOT EXISTS task_run_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      event_at TEXT NOT NULL,
+      status TEXT,
+      duration_ms INTEGER,
+      result TEXT,
+      error TEXT,
+      FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_run_events_task_at ON task_run_events(task_id, event_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_task_run_events_task_run ON task_run_events(task_id, run_id);
+
     CREATE TABLE IF NOT EXISTS router_state (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -115,6 +131,22 @@ function createSchema(database: Database.Database): void {
       .run(`${ASSISTANT_NAME}:%`);
   } catch {
     /* column already exists */
+  }
+
+  // Add run-state columns to scheduled_tasks (migration for existing DBs)
+  for (const col of [
+    "run_state TEXT DEFAULT 'idle'",
+    'current_run_id TEXT',
+    'run_started_at TEXT',
+    'last_run_status TEXT',
+    'last_error TEXT',
+    'last_duration_ms INTEGER',
+  ]) {
+    try {
+      database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN ${col}`);
+    } catch {
+      /* already exists */
+    }
   }
 
   // Add channel and is_group columns to chats if they don't exist (migration for existing DBs)
@@ -467,7 +499,7 @@ export function getRecentMessages(chatJid: string, limit = 100): NewMessage[] {
 }
 
 export function createTask(
-  task: Omit<ScheduledTask, 'last_run' | 'last_result'>,
+  task: Omit<ScheduledTask, 'last_run' | 'last_result' | 'run_state' | 'current_run_id' | 'run_started_at' | 'last_run_status' | 'last_error' | 'last_duration_ms'>,
 ): void {
   db.prepare(
     `
@@ -576,6 +608,7 @@ export function updateTask(
 
 export function deleteTask(id: string): void {
   // Delete child records first (FK constraint)
+  db.prepare('DELETE FROM task_run_events WHERE task_id = ?').run(id);
   db.prepare('DELETE FROM task_run_logs WHERE task_id = ?').run(id);
   db.prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(id);
 }
@@ -593,21 +626,6 @@ export function getDueTasks(): ScheduledTask[] {
     .all(now) as ScheduledTask[];
 }
 
-export function updateTaskAfterRun(
-  id: string,
-  nextRun: string | null,
-  lastResult: string,
-): void {
-  const now = new Date().toISOString();
-  db.prepare(
-    `
-    UPDATE scheduled_tasks
-    SET next_run = ?, last_run = ?, last_result = ?, status = CASE WHEN ? IS NULL THEN 'completed' ELSE status END
-    WHERE id = ?
-  `,
-  ).run(nextRun, now, lastResult, nextRun, id);
-}
-
 export function logTaskRun(log: TaskRunLog): void {
   db.prepare(
     `
@@ -622,6 +640,108 @@ export function logTaskRun(log: TaskRunLog): void {
     log.result,
     log.error,
   );
+}
+
+export function markTaskRunStarted(
+  taskId: string,
+  runId: string,
+  eventAt: string,
+): void {
+  db.transaction(() => {
+    db.prepare(
+      `INSERT INTO task_run_events (task_id, run_id, event_type, event_at)
+       VALUES (?, ?, 'start', ?)`,
+    ).run(taskId, runId, eventAt);
+
+    db.prepare(
+      `UPDATE scheduled_tasks
+       SET run_state = 'running', current_run_id = ?, run_started_at = ?
+       WHERE id = ?`,
+    ).run(runId, eventAt, taskId);
+  })();
+}
+
+export function markTaskRunFinished(
+  taskId: string,
+  runId: string,
+  eventAt: string,
+  durationMs: number,
+  status: 'success' | 'error',
+  nextRun: string | null,
+  result: string | null,
+  error: string | null,
+): void {
+  db.transaction(() => {
+    // Insert finish event
+    db.prepare(
+      `INSERT INTO task_run_events (task_id, run_id, event_type, event_at, status, duration_ms, result, error)
+       VALUES (?, ?, 'finish', ?, ?, ?, ?, ?)`,
+    ).run(taskId, runId, eventAt, status, durationMs, result, error);
+
+    // Reset run state, set last_run fields, advance next_run, auto-complete if once
+    const lastResult = error ? `Error: ${error}` : result ? result.slice(0, 200) : 'Completed';
+    db.prepare(
+      `UPDATE scheduled_tasks
+       SET run_state = 'idle',
+           current_run_id = NULL,
+           run_started_at = NULL,
+           last_run = ?,
+           last_result = ?,
+           last_run_status = ?,
+           last_error = ?,
+           last_duration_ms = ?,
+           next_run = ?,
+           status = CASE WHEN ? IS NULL THEN 'completed' ELSE status END
+       WHERE id = ?`,
+    ).run(eventAt, lastResult, status, error, durationMs, nextRun, nextRun, taskId);
+
+    // Legacy backward compat: also write to task_run_logs
+    db.prepare(
+      `INSERT INTO task_run_logs (task_id, run_at, duration_ms, status, result, error)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(taskId, eventAt, durationMs, status, result, error);
+  })();
+}
+
+export function getTaskRunEvents(
+  taskId: string,
+  limit = 20,
+): TaskRunEvent[] {
+  return db
+    .prepare(
+      `SELECT id, task_id, run_id, event_type, event_at, status, duration_ms, result, error
+       FROM task_run_events
+       WHERE task_id = ?
+       ORDER BY event_at DESC
+       LIMIT ?`,
+    )
+    .all(taskId, limit) as TaskRunEvent[];
+}
+
+export function pruneTaskRunEvents(
+  taskId: string,
+  keepRunCount = 200,
+): void {
+  // Get the run_ids to keep (most recent N runs by their earliest event time)
+  const keepRuns = db
+    .prepare(
+      `SELECT run_id FROM task_run_events
+       WHERE task_id = ?
+       GROUP BY run_id
+       ORDER BY MIN(event_at) DESC
+       LIMIT ?`,
+    )
+    .all(taskId, keepRunCount) as Array<{ run_id: string }>;
+
+  if (keepRuns.length < keepRunCount) return; // fewer than keepRunCount runs, nothing to prune
+
+  const keepSet = keepRuns.map((r) => r.run_id);
+  const placeholders = keepSet.map(() => '?').join(',');
+
+  db.prepare(
+    `DELETE FROM task_run_events
+     WHERE task_id = ? AND run_id NOT IN (${placeholders})`,
+  ).run(taskId, ...keepSet);
 }
 
 // --- Router state accessors ---

@@ -190,6 +190,7 @@ export async function runAgent(
         // Ensure node's directory is on PATH (launchd has minimal PATH)
         PATH: `${path.dirname(process.execPath)}:${process.env.PATH || '/usr/bin:/bin'}`,
         HOME: process.env.HOME,
+        TZ: TIMEZONE,
         ...agentEnv,
       },
     });
@@ -406,6 +407,25 @@ export async function runAgent(
       logger.debug({ logFile, verbose: isVerbose }, 'Agent log written');
 
       if (code !== 0) {
+        // Exit code null means killed by signal (SIGTERM/SIGKILL).
+        // If the agent already produced output, the work was done — treat as
+        // success.  This happens when the SDK leaves dangling handles (MCP
+        // server subprocess) and the process is killed during cleanup.
+        if (code === null && hadStreamingOutput) {
+          logger.info(
+            { group: group.name, processName, duration, code },
+            'Agent killed after output (cleanup kill), treating as success',
+          );
+          outputChain.then(() => {
+            resolve({
+              status: 'success',
+              result: null,
+              newSessionId,
+            });
+          });
+          return;
+        }
+
         logger.error(
           {
             group: group.name,

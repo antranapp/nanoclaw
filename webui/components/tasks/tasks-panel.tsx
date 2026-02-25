@@ -7,12 +7,15 @@ import { Plus, CalendarClock } from 'lucide-react';
 import { useTasks } from '@/hooks/use-tasks';
 import { TaskCard } from './task-card';
 import { TaskDialog } from './task-dialog';
+import { TaskRunHistoryDialog } from './task-run-history-dialog';
 import type { CreateTaskInput, UpdateTaskInput } from '@/hooks/use-tasks';
 
 export function TasksPanel() {
-  const { tasks, groups, loading, createTask, updateTask, deleteTask, pauseTask, resumeTask } = useTasks();
+  const { tasks, groups, loading, createTask, updateTask, deleteTask, pauseTask, resumeTask, fetchTaskRuns } = useTasks();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<typeof tasks[0] | null>(null);
+  const [historyTaskId, setHistoryTaskId] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   function openCreate() {
     setEditingTask(null);
@@ -22,6 +25,11 @@ export function TasksPanel() {
   function openEdit(task: typeof tasks[0]) {
     setEditingTask(task);
     setDialogOpen(true);
+  }
+
+  function openHistory(taskId: string) {
+    setHistoryTaskId(taskId);
+    setHistoryOpen(true);
   }
 
   async function handleSave(input: CreateTaskInput | UpdateTaskInput) {
@@ -64,6 +72,7 @@ export function TasksPanel() {
                 onPause={() => pauseTask(task.id)}
                 onResume={() => resumeTask(task.id)}
                 onDelete={() => deleteTask(task.id)}
+                onViewHistory={() => openHistory(task.id)}
               />
             ))
           )}
@@ -76,6 +85,13 @@ export function TasksPanel() {
         task={editingTask}
         groups={groups}
         onSave={handleSave}
+      />
+
+      <TaskRunHistoryDialog
+        taskId={historyTaskId}
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        fetchTaskRuns={fetchTaskRuns}
       />
     </div>
   );

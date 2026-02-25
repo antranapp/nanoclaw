@@ -19,6 +19,120 @@ const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
+const TIMEZONE = process.env.NANOCLAW_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+/** Current local time formatted as "YYYY-MM-DDTHH:MM:SS" in TIMEZONE. */
+function currentLocalTime(): string {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  return fmt.format(new Date()).replace(', ', 'T').replace(/24:/, '00:');
+}
+
+/**
+ * Parse a relative time string like "+5m", "+1h30m", "+90s" into milliseconds.
+ * Returns null if the string is not a relative format.
+ */
+function parseRelativeTime(value: string): number | null {
+  if (!value.startsWith('+')) return null;
+  const str = value.slice(1);
+  let totalMs = 0;
+  let matched = false;
+
+  const dayMatch = str.match(/(\d+)\s*d/);
+  if (dayMatch) { totalMs += parseInt(dayMatch[1], 10) * 86_400_000; matched = true; }
+
+  const hourMatch = str.match(/(\d+)\s*h/);
+  if (hourMatch) { totalMs += parseInt(hourMatch[1], 10) * 3_600_000; matched = true; }
+
+  const minMatch = str.match(/(\d+)\s*m(?!s)/);
+  if (minMatch) { totalMs += parseInt(minMatch[1], 10) * 60_000; matched = true; }
+
+  const secMatch = str.match(/(\d+)\s*s/);
+  if (secMatch) { totalMs += parseInt(secMatch[1], 10) * 1_000; matched = true; }
+
+  return matched && totalMs > 0 ? totalMs : null;
+}
+
+/**
+ * Convert a local datetime string (no timezone) to UTC ISO string.
+ * Uses Intl to compute the timezone offset — no external dependencies.
+ */
+function localToUtcIso(localStr: string, timezone: string): string {
+  const m = localStr.match(/(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) throw new Error(`Invalid local datetime: ${localStr}`);
+  const [, year, month, day, hour, minute, second = '0'] = m;
+
+  // Treat the components as UTC to get a reference point
+  const naiveUtcMs = Date.UTC(+year, +month - 1, +day, +hour, +minute, +second);
+
+  // Format that UTC instant in the target timezone
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(new Date(naiveUtcMs));
+  const get = (type: string): number =>
+    parseInt(parts.find((p) => p.type === type)?.value || '0', 10);
+
+  const h = get('hour') % 24;
+  const tzViewMs = Date.UTC(get('year'), get('month') - 1, get('day'), h, get('minute'), get('second'));
+
+  // offset = how far the timezone is from UTC at this instant
+  const offsetMs = tzViewMs - naiveUtcMs;
+  return new Date(naiveUtcMs - offsetMs).toISOString();
+}
+
+/** Format a Date as a full local datetime string in TIMEZONE. */
+function formatLocalDateTime(date: Date): string {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: TIMEZONE,
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  }).format(date);
+}
+
+/**
+ * Resolve a "once" schedule_value to a UTC ISO string.
+ * Accepts: "+5m" (relative), "2026-02-25T07:16:00" (local), or UTC ISO string.
+ */
+function resolveOnceValue(value: string): { utcIso: string; localDisplay: string } | { error: string } {
+  // Relative time: "+5m", "+1h30m", etc.
+  const relMs = parseRelativeTime(value);
+  if (relMs !== null) {
+    const target = new Date(Date.now() + relMs);
+    return { utcIso: target.toISOString(), localDisplay: formatLocalDateTime(target) };
+  }
+
+  // Already UTC (has Z or offset suffix)
+  if (/[Zz]$/.test(value) || /[+-]\d{2}:\d{2}$/.test(value)) {
+    const d = new Date(value);
+    if (isNaN(d.getTime())) return { error: `Invalid timestamp: "${value}"` };
+    return { utcIso: d.toISOString(), localDisplay: formatLocalDateTime(d) };
+  }
+
+  // Local time string — convert to UTC
+  try {
+    const utcIso = localToUtcIso(value, TIMEZONE);
+    return { utcIso, localDisplay: value };
+  } catch {
+    return { error: `Invalid timestamp: "${value}". Use format like "2026-02-01T15:30:00" or relative like "+5m".` };
+  }
+}
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -66,6 +180,8 @@ server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools.
 
+CURRENT TIME: ${currentLocalTime()} (timezone: ${TIMEZONE})
+
 CONTEXT MODE - Choose based on task type:
 \u2022 "group": Task runs in the group's conversation context, with access to chat history. Use for tasks that need context about ongoing discussions, user preferences, or recent interactions.
 \u2022 "isolated": Task runs in a fresh session with no conversation history. Use for independent tasks that don't need prior context. When using isolated mode, include all necessary context in the prompt itself.
@@ -81,14 +197,17 @@ MESSAGING BEHAVIOR - The task agent's output is sent to the user or group. It ca
 \u2022 Only send a message when there's something to report (e.g., "notify me if...")
 \u2022 Never send a message (background maintenance tasks)
 
-SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
-\u2022 cron: Standard cron expression (e.g., "*/5 * * * *" for every 5 minutes, "0 9 * * *" for daily at 9am LOCAL time)
+SCHEDULE VALUE FORMAT:
+\u2022 cron: Standard cron expression (e.g., "*/5 * * * *" for every 5 minutes, "0 9 * * *" for daily at 9am in ${TIMEZONE})
 \u2022 interval: Milliseconds between runs (e.g., "300000" for 5 minutes, "3600000" for 1 hour)
-\u2022 once: Local time WITHOUT "Z" suffix (e.g., "2026-02-01T15:30:00"). Do NOT use UTC/Z suffix.`,
+\u2022 once: PREFERRED: relative offset like "+5m", "+1h", "+1h30m", "+2d". The server computes the exact time.
+         Also accepted: local timestamp like "2026-02-01T15:30:00" (in ${TIMEZONE}, no Z suffix).
+
+IMPORTANT for "once" tasks: When the user says "in X minutes/hours", ALWAYS use relative format "+Xm" or "+Xh". Do NOT compute the absolute time yourself — let the server handle it.`,
   {
     prompt: z.string().describe('What the agent should do when the task runs. For isolated mode, include all necessary context here.'),
     schedule_type: z.enum(['cron', 'interval', 'once']).describe('cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time'),
-    schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)'),
+    schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: "300000" | once: "+5m" or "+1h" (preferred) or local time "2026-02-01T15:30:00"'),
     context_mode: z.enum(['group', 'isolated']).default('group').describe('group=runs with chat history and memory, isolated=fresh session (include context in prompt)'),
     target_group_jid: z.string().optional().describe('(Main group only) JID of the group to schedule the task for. Defaults to the current group.'),
   },
@@ -112,16 +231,10 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
         };
       }
     } else if (args.schedule_type === 'once') {
-      if (/[Zz]$/.test(args.schedule_value) || /[+-]\d{2}:\d{2}$/.test(args.schedule_value)) {
+      const resolved = resolveOnceValue(args.schedule_value);
+      if ('error' in resolved) {
         return {
-          content: [{ type: 'text' as const, text: `Timestamp must be local time without timezone suffix. Got "${args.schedule_value}" — use format like "2026-02-01T15:30:00".` }],
-          isError: true,
-        };
-      }
-      const date = new Date(args.schedule_value);
-      if (isNaN(date.getTime())) {
-        return {
-          content: [{ type: 'text' as const, text: `Invalid timestamp: "${args.schedule_value}". Use local time format like "2026-02-01T15:30:00".` }],
+          content: [{ type: 'text' as const, text: resolved.error }],
           isError: true,
         };
       }
@@ -130,12 +243,28 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
     // Non-main groups can only schedule for themselves
     const targetJid = isMain && args.target_group_jid ? args.target_group_jid : chatJid;
 
+    // For "once" tasks, resolve to UTC ISO string server-side
+    let scheduleValue = args.schedule_value;
+    let resolvedLocalDisplay: string | undefined;
+    if (args.schedule_type === 'once') {
+      const resolved = resolveOnceValue(args.schedule_value);
+      if ('error' in resolved) {
+        return {
+          content: [{ type: 'text' as const, text: resolved.error }],
+          isError: true,
+        };
+      }
+      scheduleValue = resolved.utcIso;
+      resolvedLocalDisplay = resolved.localDisplay;
+    }
+
     const data = {
       type: 'schedule_task',
       prompt: args.prompt,
       schedule_type: args.schedule_type,
-      schedule_value: args.schedule_value,
+      schedule_value: scheduleValue,
       context_mode: args.context_mode || 'group',
+      timezone: TIMEZONE,
       targetJid,
       createdBy: groupFolder,
       timestamp: new Date().toISOString(),
@@ -143,6 +272,11 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
 
     const filename = writeIpcFile(TASKS_DIR, data);
 
+    if (resolvedLocalDisplay) {
+      return {
+        content: [{ type: 'text' as const, text: `Task scheduled successfully. It will run at ${resolvedLocalDisplay} (${TIMEZONE}). Use this exact time when telling the user.` }],
+      };
+    }
     return {
       content: [{ type: 'text' as const, text: `Task scheduled (${filename}): ${args.schedule_type} - ${args.schedule_value}` }],
     };

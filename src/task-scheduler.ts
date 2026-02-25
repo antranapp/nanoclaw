@@ -1,4 +1,5 @@
 import { ChildProcess } from 'child_process';
+import { randomUUID } from 'crypto';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
@@ -19,12 +20,15 @@ import {
   getDueTasks,
   getTaskById,
   logTaskRun,
+  markTaskRunFinished,
+  markTaskRunStarted,
+  pruneTaskRunEvents,
   updateTask,
-  updateTaskAfterRun,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
+import { taskEventBus } from './task-events.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 export interface SchedulerDependencies {
@@ -41,11 +45,36 @@ export interface SchedulerDependencies {
   sendMessage: (jid: string, text: string) => Promise<void>;
 }
 
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = Math.floor(ms / 1000) % 60;
+  const minutes = Math.floor(ms / 60_000) % 60;
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function formatLocalTime(isoString: string, timezone?: string): string {
+  try {
+    return new Date(isoString).toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: timezone || TIMEZONE,
+    });
+  } catch {
+    return isoString;
+  }
+}
+
 async function runTask(
   task: ScheduledTask,
   deps: SchedulerDependencies,
 ): Promise<void> {
   const startTime = Date.now();
+  const runId = randomUUID();
+  const shortId = task.id.slice(0, 8);
+
   let groupDir: string;
   try {
     groupDir = resolveGroupFolderPath(task.group_folder);
@@ -69,11 +98,6 @@ async function runTask(
   }
   fs.mkdirSync(groupDir, { recursive: true });
 
-  logger.info(
-    { taskId: task.id, group: task.group_folder },
-    'Running scheduled task',
-  );
-
   const groups = deps.registeredGroups();
   const group = Object.values(groups).find(
     (g) => g.folder === task.group_folder,
@@ -94,6 +118,26 @@ async function runTask(
     });
     return;
   }
+
+  // --- On start ---
+  const startedAt = new Date().toISOString();
+  markTaskRunStarted(task.id, runId, startedAt);
+
+  const updatedTaskAtStart = getTaskById(task.id);
+  if (updatedTaskAtStart) {
+    taskEventBus.emitTaskUpdate(updatedTaskAtStart);
+  }
+
+  const localTime = formatLocalTime(startedAt, task.timezone);
+  await deps.sendMessage(
+    task.chat_jid,
+    `🔄 Task ${shortId} started (${task.group_folder}) at ${localTime}`,
+  );
+
+  logger.info(
+    { taskId: task.id, runId, group: task.group_folder },
+    'Running scheduled task',
+  );
 
   // Update tasks snapshot for agent to read (filtered by group)
   const isMain = task.group_folder === MAIN_GROUP_FOLDER;
@@ -179,13 +223,13 @@ async function runTask(
     }
 
     logger.info(
-      { taskId: task.id, durationMs: Date.now() - startTime },
+      { taskId: task.id, runId, durationMs: Date.now() - startTime },
       'Task completed',
     );
   } catch (err) {
     if (idleTimer) clearTimeout(idleTimer);
     error = err instanceof Error ? err.message : String(err);
-    logger.error({ taskId: task.id, error }, 'Task failed');
+    logger.error({ taskId: task.id, runId, error }, 'Task failed');
   }
 
   const durationMs = Date.now() - startTime;
@@ -199,15 +243,7 @@ async function runTask(
     return;
   }
 
-  logTaskRun({
-    task_id: task.id,
-    run_at: new Date().toISOString(),
-    duration_ms: durationMs,
-    status: error ? 'error' : 'success',
-    result,
-    error,
-  });
-
+  // --- On finish ---
   let nextRun: string | null = null;
   if (task.schedule_type === 'cron') {
     const interval = CronExpressionParser.parse(task.schedule_value, {
@@ -220,12 +256,28 @@ async function runTask(
   }
   // 'once' tasks have no next run
 
-  const resultSummary = error
-    ? `Error: ${error}`
-    : result
-      ? result.slice(0, 200)
-      : 'Completed';
-  updateTaskAfterRun(task.id, nextRun, resultSummary);
+  const finishedAt = new Date().toISOString();
+  const status: 'success' | 'error' = error ? 'error' : 'success';
+  markTaskRunFinished(task.id, runId, finishedAt, durationMs, status, nextRun, result, error);
+  pruneTaskRunEvents(task.id, 200);
+
+  const updatedTaskAtFinish = getTaskById(task.id);
+  if (updatedTaskAtFinish) {
+    taskEventBus.emitTaskUpdate(updatedTaskAtFinish);
+  }
+
+  const durationStr = formatDuration(durationMs);
+  if (error) {
+    await deps.sendMessage(
+      task.chat_jid,
+      `❌ Task ${shortId} failed in ${durationStr}: ${error}`,
+    );
+  } else {
+    await deps.sendMessage(
+      task.chat_jid,
+      `✅ Task ${shortId} finished in ${durationStr}`,
+    );
+  }
 }
 
 let schedulerRunning = false;

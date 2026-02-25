@@ -6,13 +6,8 @@ import { Separator } from '@/components/ui/separator';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { MarkdownMessage } from '@/components/markdown-message';
+import { formatTime } from '@/lib/date';
 import type { Message } from '@/hooks/use-chat';
-
-function formatTime(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
 
 interface Props {
   messages: Message[];
@@ -25,12 +20,16 @@ export function ChatPanel({ messages, isTyping, activeChatJid, onSend }: Props) 
   const [draft, setDraft] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Scroll instantly when chat is opened (activeChatJid changes);
-  // smooth-scroll for new messages / typing within the same chat.
+  // Scroll instantly on mount (tab switch) or chat switch;
+  // smooth-scroll only for new messages / typing within the same chat.
   const prevChatRef = useRef(activeChatJid);
+  const mountedRef = useRef(false);
   useEffect(() => {
-    const instant = prevChatRef.current !== activeChatJid;
-    if (instant) prevChatRef.current = activeChatJid;
+    const isMount = !mountedRef.current;
+    if (isMount) mountedRef.current = true;
+    const chatChanged = prevChatRef.current !== activeChatJid;
+    if (chatChanged) prevChatRef.current = activeChatJid;
+    const instant = isMount || chatChanged;
     bottomRef.current?.scrollIntoView({ behavior: instant ? 'instant' : 'smooth' });
   }, [messages, isTyping, activeChatJid]);
 

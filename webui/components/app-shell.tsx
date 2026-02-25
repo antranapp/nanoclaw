@@ -43,9 +43,14 @@ export function AppShell() {
         </nav>
       </TooltipProvider>
 
-      {/* Content area */}
-      <div className="flex-1 min-w-0">
-        {activeView === 'chat' ? <ChatShell /> : <TasksPanel />}
+      {/* Content area — both views stay mounted so scroll position & draft are preserved */}
+      <div className="flex-1 min-w-0 relative">
+        <div className={activeView === 'chat' ? 'h-full' : 'hidden'}>
+          <ChatShell />
+        </div>
+        <div className={activeView === 'settings' ? 'h-full' : 'hidden'}>
+          <TasksPanel />
+        </div>
       </div>
     </div>
   );

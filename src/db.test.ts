@@ -15,6 +15,10 @@ import {
   getRegisteredJidsForFolder,
   getSession,
   getTaskById,
+  getTaskRunEvents,
+  markTaskRunFinished,
+  markTaskRunStarted,
+  pruneTaskRunEvents,
   setRegisteredGroup,
   setSession,
   storeChatMetadata,
@@ -726,5 +730,141 @@ describe('deleteGroupByFolder', () => {
 
     expect(getRegisteredJidsForFolder('safe')).toHaveLength(1);
     expect(getRecentMessages('web:safe', 100)).toHaveLength(1);
+  });
+});
+
+// --- Task run events ---
+
+function createTestTask(id: string) {
+  createTask({
+    id,
+    group_folder: 'main',
+    chat_jid: 'group@g.us',
+    prompt: 'test task',
+    schedule_type: 'once',
+    schedule_value: '2024-06-01T00:00:00.000Z',
+    context_mode: 'isolated',
+    next_run: '2024-06-01T00:00:00.000Z',
+    status: 'active',
+    created_at: '2024-01-01T00:00:00.000Z',
+  });
+}
+
+describe('markTaskRunStarted', () => {
+  it('sets run_state to running and records start event', () => {
+    createTestTask('task-rs-1');
+
+    markTaskRunStarted('task-rs-1', 'run-001', '2024-06-01T00:00:00.000Z');
+
+    const task = getTaskById('task-rs-1');
+    expect(task!.run_state).toBe('running');
+    expect(task!.current_run_id).toBe('run-001');
+    expect(task!.run_started_at).toBe('2024-06-01T00:00:00.000Z');
+
+    const events = getTaskRunEvents('task-rs-1');
+    expect(events).toHaveLength(1);
+    expect(events[0].event_type).toBe('start');
+    expect(events[0].run_id).toBe('run-001');
+  });
+});
+
+describe('markTaskRunFinished', () => {
+  it('resets run_state to idle and records finish event on success', () => {
+    createTestTask('task-rf-1');
+    markTaskRunStarted('task-rf-1', 'run-002', '2024-06-01T00:00:00.000Z');
+
+    markTaskRunFinished(
+      'task-rf-1', 'run-002', '2024-06-01T00:01:00.000Z',
+      60000, 'success', null, 'all good', null,
+    );
+
+    const task = getTaskById('task-rf-1');
+    expect(task!.run_state).toBe('idle');
+    expect(task!.current_run_id).toBeNull();
+    expect(task!.run_started_at).toBeNull();
+    expect(task!.last_run_status).toBe('success');
+    expect(task!.last_error).toBeNull();
+    expect(task!.last_duration_ms).toBe(60000);
+    // once task with null nextRun should be completed
+    expect(task!.status).toBe('completed');
+  });
+
+  it('records error status and last_error on failure', () => {
+    createTestTask('task-rf-2');
+    markTaskRunStarted('task-rf-2', 'run-003', '2024-06-01T00:00:00.000Z');
+
+    markTaskRunFinished(
+      'task-rf-2', 'run-003', '2024-06-01T00:00:30.000Z',
+      30000, 'error', '2024-06-02T00:00:00.000Z', null, 'something broke',
+    );
+
+    const task = getTaskById('task-rf-2');
+    expect(task!.run_state).toBe('idle');
+    expect(task!.last_run_status).toBe('error');
+    expect(task!.last_error).toBe('something broke');
+    expect(task!.last_duration_ms).toBe(30000);
+    // has nextRun so should still be active
+    expect(task!.status).toBe('active');
+  });
+});
+
+describe('getTaskRunEvents', () => {
+  it('returns events in descending order with correct limit', () => {
+    createTestTask('task-ev-1');
+
+    markTaskRunStarted('task-ev-1', 'run-a', '2024-06-01T00:00:00.000Z');
+    markTaskRunFinished('task-ev-1', 'run-a', '2024-06-01T00:01:00.000Z', 60000, 'success', null, 'ok', null);
+    markTaskRunStarted('task-ev-1', 'run-b', '2024-06-01T00:02:00.000Z');
+    markTaskRunFinished('task-ev-1', 'run-b', '2024-06-01T00:03:00.000Z', 60000, 'success', null, 'ok', null);
+
+    // All events
+    const all = getTaskRunEvents('task-ev-1', 100);
+    expect(all).toHaveLength(4);
+    // Descending order
+    expect(all[0].event_at >= all[1].event_at).toBe(true);
+
+    // Limited
+    const limited = getTaskRunEvents('task-ev-1', 2);
+    expect(limited).toHaveLength(2);
+  });
+});
+
+describe('pruneTaskRunEvents', () => {
+  it('keeps only the specified number of most recent runs', () => {
+    createTestTask('task-pr-1');
+
+    // Create 3 runs
+    for (let i = 0; i < 3; i++) {
+      const runId = `run-${String(i).padStart(3, '0')}`;
+      const startAt = `2024-06-01T0${i}:00:00.000Z`;
+      const endAt = `2024-06-01T0${i}:01:00.000Z`;
+      markTaskRunStarted('task-pr-1', runId, startAt);
+      markTaskRunFinished('task-pr-1', runId, endAt, 60000, 'success', null, 'ok', null);
+    }
+
+    // Should have 6 events (3 runs * 2 events each)
+    expect(getTaskRunEvents('task-pr-1', 100)).toHaveLength(6);
+
+    // Prune to keep only 2 runs
+    pruneTaskRunEvents('task-pr-1', 2);
+
+    const remaining = getTaskRunEvents('task-pr-1', 100);
+    // Should have 4 events (2 runs * 2 events each)
+    expect(remaining).toHaveLength(4);
+  });
+});
+
+describe('deleteTask with run events', () => {
+  it('also removes task_run_events', () => {
+    createTestTask('task-del-1');
+    markTaskRunStarted('task-del-1', 'run-del', '2024-06-01T00:00:00.000Z');
+    markTaskRunFinished('task-del-1', 'run-del', '2024-06-01T00:01:00.000Z', 60000, 'success', null, 'ok', null);
+
+    expect(getTaskRunEvents('task-del-1', 100)).toHaveLength(2);
+
+    deleteTask('task-del-1');
+
+    expect(getTaskById('task-del-1')).toBeUndefined();
+    expect(getTaskRunEvents('task-del-1', 100)).toHaveLength(0);
   });
 });

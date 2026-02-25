@@ -27,6 +27,7 @@ describe('GroupQueue', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.clearAllMocks();
     queue = new GroupQueue();
   });
 
@@ -245,9 +246,9 @@ describe('GroupQueue', () => {
 
   // --- Idle preemption ---
 
-  it('does NOT preempt active container when not idle', async () => {
+  it('closes interactive agent when scheduled task is enqueued', async () => {
     const fs = await import('fs');
-    let resolveProcess: () => void;
+    let resolveProcess: (() => void) | undefined;
 
     const processMessages = vi.fn(async () => {
       await new Promise<void>((resolve) => {
@@ -258,25 +259,55 @@ describe('GroupQueue', () => {
 
     queue.setProcessMessagesFn(processMessages);
 
-    // Start processing (takes the active slot)
+    // Start processing (takes the active slot as interactive agent)
     queue.enqueueMessageCheck('group1@g.us');
     await vi.advanceTimersByTimeAsync(10);
 
     // Register a process so closeStdin has a groupFolder
     queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
 
-    // Enqueue a task while container is active but NOT idle
+    // Enqueue a task while interactive agent is active
     const taskFn = vi.fn(async () => {});
     queue.enqueueTask('group1@g.us', 'task-1', taskFn);
 
-    // _close should NOT have been written (container is working, not idle)
+    // _close SHOULD have been written to end the interactive agent
+    // so the scheduled task can run promptly
+    const writeFileSync = vi.mocked(fs.default.writeFileSync);
+    const closeWrites = writeFileSync.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
+    );
+    expect(closeWrites).toHaveLength(1);
+
+    resolveProcess!();
+    await vi.advanceTimersByTimeAsync(10);
+  });
+
+  it('does NOT close active task container when another task is enqueued', async () => {
+    const fs = await import('fs');
+    let resolveTask: (() => void) | undefined;
+
+    // Start a task (sets isTaskContainer = true)
+    const taskFn1 = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        resolveTask = resolve;
+      });
+    });
+    queue.enqueueTask('group1@g.us', 'task-1', taskFn1);
+    await vi.advanceTimersByTimeAsync(10);
+    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
+
+    // Enqueue a second task while first task is running
+    const taskFn2 = vi.fn(async () => {});
+    queue.enqueueTask('group1@g.us', 'task-2', taskFn2);
+
+    // _close should NOT have been written (active agent is a task, not interactive)
     const writeFileSync = vi.mocked(fs.default.writeFileSync);
     const closeWrites = writeFileSync.mock.calls.filter(
       (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
     );
     expect(closeWrites).toHaveLength(0);
 
-    resolveProcess!();
+    resolveTask!();
     await vi.advanceTimersByTimeAsync(10);
   });
 
